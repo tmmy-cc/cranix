@@ -229,11 +229,11 @@ pub static PRIMOPS: &[PrimOp] = &[
             None => err(format!("list index {i} is out of bounds")),
         }
     }),
-    prim!("fetchGit", 1, |_, _| err("builtins.fetchGit is not supported")),
+    prim!("fetchGit", 1, crate::fetch::prim_fetch_git),
     prim!("fetchMercurial", 1, |_, _| err("builtins.fetchMercurial is not supported")),
-    prim!("fetchTarball", 1, |_, _| err("builtins.fetchTarball is not supported")),
-    prim!("fetchTree", 1, |_, _| err("builtins.fetchTree is not supported")),
-    prim!("fetchurl", 1, |_, _| err("builtins.fetchurl is not supported; use <nix/fetchurl.nix>")),
+    prim!("fetchTarball", 1, crate::fetch::prim_fetch_tarball),
+    prim!("fetchTree", 1, crate::fetch::prim_fetch_tree),
+    prim!("fetchurl", 1, crate::fetch::prim_fetchurl),
     prim!("filter", 2, |ev, a| {
         let f = ev.force_fn(&a[0])?;
         let l = ev.force_list(&a[1])?;

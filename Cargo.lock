@@ -394,6 +394,7 @@ name = "oxnix-eval"
 version = "0.1.0"
 dependencies = [
  "oxnix-core",
+ "oxnix-fetchers",
  "oxnix-store",
  "regex",
  "serde_json",
