@@ -2,7 +2,7 @@
 
 use crate::value::Sym;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Pos {
     pub file: u32,
     pub offset: u32,
@@ -55,7 +55,7 @@ pub struct Formals {
 pub enum Ast {
     Int(i64),
     Float(f64),
-    Str(Vec<StrPart>),
+    Str(Vec<StrPart>, Pos),
     /// Absolute, canonical path literal.
     Path(String),
     /// Path literal with interpolations; the first part is the absolute

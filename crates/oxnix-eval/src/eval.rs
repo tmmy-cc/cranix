@@ -4,7 +4,6 @@
 use std::cell::{Cell, OnceCell, RefCell};
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::fmt;
 use std::rc::Rc;
 
 use oxnix_core::{Derivation, FileIngestion, Hash, StorePath};
@@ -15,44 +14,9 @@ use crate::compile::{Compiler, Expr, Key, LambdaDef};
 use crate::parser::{canon_path, Parser};
 use crate::value::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ErrKind {
-    /// `throw`; catchable by `tryEval`.
-    Throw,
-    /// Failed `assert`; catchable by `tryEval`.
-    Assert,
-    Abort,
-    Other,
-}
-
-#[derive(Debug, Clone)]
-pub struct EvalError {
-    pub kind: ErrKind,
-    pub msg: String,
-    pub trace: Vec<String>,
-}
-
-impl fmt::Display for EvalError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for t in self.trace.iter().rev() {
-            writeln!(f, "       … {t}")?;
-        }
-        write!(f, "error: {}", self.msg)
-    }
-}
-
-pub type R<T> = Result<T, Box<EvalError>>;
-
-pub fn err<T>(msg: impl Into<String>) -> R<T> {
-    Err(Box::new(EvalError { kind: ErrKind::Other, msg: msg.into(), trace: Vec::new() }))
-}
-
-pub fn err_kind<T>(kind: ErrKind, msg: impl Into<String>) -> R<T> {
-    Err(Box::new(EvalError { kind, msg: msg.into(), trace: Vec::new() }))
-}
+pub use crate::error::{err, err_at, err_hint, err_kind, ErrKind, EvalError, Frame, R};
 
 const MAX_CALL_DEPTH: usize = 100_000;
-const MAX_TRACE: usize = 12;
 
 pub struct Syms {
     pub out_path: Sym,
@@ -157,10 +121,20 @@ impl Eval {
         (name.clone(), line, col)
     }
 
-    fn with_frame<T>(&self, r: R<T>, frame: impl FnOnce() -> String) -> R<T> {
+    /// Adds a frame to the trace of an error passing through.
+    fn with_frame<T>(&self, r: R<T>, frame: impl FnOnce() -> Frame) -> R<T> {
         r.map_err(|mut e| {
-            if e.trace.len() < MAX_TRACE {
-                e.trace.push(frame());
+            e.trace.push(frame());
+            e
+        })
+    }
+
+    /// Gives an error raised directly by the construct at `pos`, one that
+    /// has no position and has passed no frame yet, that position.
+    fn locate<T>(&self, r: R<T>, pos: Pos) -> R<T> {
+        r.map_err(|mut e| {
+            if e.pos.is_none() && e.trace.is_empty() {
+                e.pos = Some(pos);
             }
             e
         })
@@ -175,11 +149,19 @@ impl Eval {
             (files.len() - 1) as u32
         };
         let ast = Parser::new(src, file, base_dir).parse_file().map_err(|e| {
-            let pos = Pos { file, offset: e.offset as u32 };
-            Box::new(EvalError { kind: ErrKind::Other, msg: format!("{}\n       at {}", e.msg, self.fmt_pos(pos)), trace: Vec::new() })
+            let mut err = EvalError::new(ErrKind::Other, e.msg);
+            err.pos = Some(Pos { file, offset: e.offset as u32 });
+            Box::new(err)
         })?;
         Compiler::new(&self.globals).compile(ast).map_err(|e| {
-            Box::new(EvalError { kind: ErrKind::Other, msg: format!("{}\n       at {}", e.msg, self.fmt_pos(e.pos)), trace: Vec::new() })
+            let msg = match e.prev {
+                Some(p) => format!("{} at {}", e.msg, self.fmt_pos(p)),
+                None => e.msg,
+            };
+            let mut err = EvalError::new(ErrKind::Other, msg);
+            err.pos = Some(e.pos);
+            err.hint = e.hint;
+            Box::new(err)
         })
     }
 
@@ -282,7 +264,7 @@ impl Eval {
                     }
                     cur = en.parent.as_ref();
                 }
-                err(format!("undefined variable '{name}'\n       at {}", self.fmt_pos(*pos)))
+                self.undefined_with_var(name, *pos, env)
             }
             Expr::Select { e, path, default, pos } => {
                 let mut v = self.eval(e, env)?;
@@ -292,30 +274,33 @@ impl Eval {
                         Value::Attrs(a) => match a.get(&k) {
                             Some(x) => {
                                 let x = x.clone();
-                                v = self.with_frame(self.force(&x), || {
-                                    format!("while evaluating the attribute '{k}' at {}", self.fmt_pos(*pos))
+                                // A black hole reached here means the attribute
+                                // depends on itself, so point at the selection.
+                                let r = self.locate(self.force(&x), *pos);
+                                v = self.with_frame(r, || {
+                                    Frame::new(format!("while evaluating the attribute '{k}'"), Some(*pos))
                                 })?;
                             }
                             None => {
                                 if let Some(d) = default {
                                     return self.eval(d, env);
                                 }
-                                return err(format!(
-                                    "attribute '{k}' missing{}\n       at {}",
-                                    suggest(a, &k),
-                                    self.fmt_pos(*pos)
-                                ));
+                                let hint = crate::error::did_you_mean(k.as_str(), a.iter().map(|(s, _)| s.as_str()));
+                                return err_hint(Some(*pos), format!("attribute '{k}' missing"), hint);
                             }
                         },
                         _ => {
                             if let Some(d) = default {
                                 return self.eval(d, env);
                             }
-                            return err(format!(
-                                "expected a set but found {} while selecting '{k}'\n       at {}",
-                                v.describe(),
-                                self.fmt_pos(*pos)
-                            ));
+                            return err_at(
+                                *pos,
+                                format!(
+                                    "expected a set but found {} while selecting the attribute '{k}': {}",
+                                    v.describe(),
+                                    self.preview(&v)
+                                ),
+                            );
                         }
                     }
                 }
@@ -385,7 +370,7 @@ impl Eval {
                 let mut fv = self.eval(f, env)?;
                 for a in args.iter() {
                     let arg = self.lazy(a, env, true);
-                    fv = self.with_frame(self.call(&fv, arg), || format!("while calling a function at {}", self.fmt_pos(*pos)))?;
+                    fv = self.locate(self.call_at(&fv, arg, Some(*pos)), *pos)?;
                 }
                 Ok(fv)
             }
@@ -394,26 +379,47 @@ impl Eval {
                 self.eval(body, &en)
             }
             Expr::If { c, t, e, pos } => {
-                let cv = self.eval(c, env)?;
+                let cv = self.with_frame(self.eval(c, env), || Frame::detail("while evaluating a branch condition", Some(*pos)))?;
                 match cv {
                     Value::Bool(true) => self.eval(t, env),
                     Value::Bool(false) => self.eval(e, env),
-                    v => err(format!("expected a Boolean but found {} in if condition\n       at {}", v.describe(), self.fmt_pos(*pos))),
+                    v => err_at(*pos, format!("expected a Boolean but found {} in the condition of 'if': {}", v.describe(), self.preview(&v))),
                 }
             }
-            Expr::Assert { c, body, pos } => match self.eval(c, env)? {
-                Value::Bool(true) => self.eval(body, env),
-                Value::Bool(false) => err_kind(ErrKind::Assert, format!("assertion failed\n       at {}", self.fmt_pos(*pos))),
-                v => err(format!("expected a Boolean but found {} in assertion", v.describe())),
-            },
-            Expr::BinOp { op, l, r, pos } => self.with_frame(self.binop(*op, l, r, env), || {
-                format!("while evaluating an operator at {}", self.fmt_pos(*pos))
-            }),
-            Expr::Not(e, _) => Ok(Value::Bool(!self.eval_bool(e, env)?)),
-            Expr::Neg(e, _) => match self.eval(e, env)? {
-                Value::Int(n) => n.checked_neg().map(Value::Int).ok_or(()).or_else(|_| err("integer overflow in negation")),
+            Expr::Assert { c, body, pos } => {
+                let cv = self.with_frame(self.eval(c, env), || {
+                    Frame::detail(format!("while evaluating the condition of the assertion '{}'", self.assert_text(*pos)), Some(*pos))
+                })?;
+                match cv {
+                    Value::Bool(true) => self.eval(body, env),
+                    Value::Bool(false) => {
+                        let mut e = EvalError::new(ErrKind::Assert, format!("assertion '{}' failed", self.assert_text(*pos)));
+                        e.pos = Some(*pos);
+                        Err(Box::new(e))
+                    }
+                    v => err_at(
+                        *pos,
+                        format!(
+                            "expected a Boolean but found {} in the condition of the assertion '{}': {}",
+                            v.describe(),
+                            self.assert_text(*pos),
+                            self.preview(&v)
+                        ),
+                    ),
+                }
+            }
+            Expr::BinOp { op, l, r, pos } => self.locate(self.binop(*op, l, r, env, *pos), *pos),
+            Expr::Not(e, pos) => {
+                let v = self.eval(e, env)?;
+                match v {
+                    Value::Bool(b) => Ok(Value::Bool(!b)),
+                    v => err_at(*pos, format!("expected a Boolean but found {} in the operand of '!': {}", v.describe(), self.preview(&v))),
+                }
+            }
+            Expr::Neg(e, pos) => match self.eval(e, env)? {
+                Value::Int(n) => n.checked_neg().map(Value::Int).ok_or(()).or_else(|_| err_at(*pos, format!("integer overflow in negating {n}"))),
                 Value::Float(f) => Ok(Value::Float(-f)),
-                v => err(format!("cannot negate {}", v.describe())),
+                v => err_at(*pos, format!("cannot negate {}: {}", v.describe(), self.preview(&v))),
             },
             Expr::Concat { parts, path, pos } => {
                 if *path {
@@ -424,12 +430,10 @@ impl Eval {
                     for p in &parts[1..] {
                         let v = self.eval(p, env)?;
                         let mut ctx = Context::new();
-                        s.push_str(&self.coerce_to_string(&v, &CoerceOpts { more: false, copy: false }, &mut ctx)?);
+                        let o = CoerceOpts { more: false, copy: false };
+                        s.push_str(&self.locate(self.coerce_to_string(&v, &o, &mut ctx), *pos)?);
                         if !ctx.is_empty() {
-                            return err(format!(
-                                "a string that refers to a store path cannot be appended to a path\n       at {}",
-                                self.fmt_pos(*pos)
-                            ));
+                            return err_at(*pos, "a string that refers to a store path cannot be appended to a path");
                         }
                     }
                     return Ok(Value::Path(canon_path(&s).into()));
@@ -438,9 +442,7 @@ impl Eval {
                 let mut ctx = Context::new();
                 for p in parts.iter() {
                     let v = self.eval(p, env)?;
-                    let part = self.with_frame(self.coerce_to_string(&v, &CoerceOpts { more: false, copy: true }, &mut ctx), || {
-                        format!("while evaluating a string interpolation at {}", self.fmt_pos(*pos))
-                    })?;
+                    let part = self.locate(self.coerce_to_string(&v, &CoerceOpts { more: false, copy: true }, &mut ctx), *pos)?;
                     s.push_str(&part);
                 }
                 Ok(Value::str_ctx(s, ctx))
@@ -468,24 +470,69 @@ impl Eval {
         }
     }
 
-    fn eval_bool(&self, e: &'static Expr, env: &Rc<Env>) -> R<bool> {
+    /// Evaluates an operand of `&&`, `||` or `->`.
+    fn eval_bool(&self, e: &'static Expr, env: &Rc<Env>, side: &str, op: BinOp, pos: Pos) -> R<bool> {
         match self.eval(e, env)? {
             Value::Bool(b) => Ok(b),
-            v => err(format!("expected a Boolean but found {}", v.describe())),
+            v => err_at(
+                pos,
+                format!("expected a Boolean but found {} in the {side} operand of {}: {}", v.describe(), op_name(op), self.preview(&v)),
+            ),
         }
+    }
+
+    /// Source text of the condition of the `assert` at `pos`.
+    pub fn assert_text(&self, pos: Pos) -> String {
+        let files = self.files.borrow();
+        let Some((_, src)) = files.get(pos.file as usize) else { return String::new() };
+        crate::parser::assert_condition(src, pos.offset as usize).unwrap_or_default()
+    }
+
+    /// Error for a variable that neither the static scope nor any `with`
+    /// in `env` binds, suggesting names from those `with` sets.
+    fn undefined_with_var(&self, name: &Sym, pos: Pos, env: &Rc<Env>) -> R<Value> {
+        let mut names: Vec<Sym> = Vec::new();
+        let mut cur = Some(env);
+        while let Some(en) = cur {
+            if let EnvKind::With(attrs) = &en.kind {
+                if let Ok(a) = self.force_attrs(attrs) {
+                    names.extend(a.iter().map(|(k, _)| k.clone()));
+                }
+            }
+            cur = en.parent.as_ref();
+        }
+        let hint = crate::error::did_you_mean(name.as_str(), names.iter().map(|s| s.as_str()));
+        err_hint(Some(pos), format!("undefined variable '{name}'"), hint)
     }
 
     // ---- function application ----
 
     pub fn call(&self, f: &Value, arg: Value) -> R<Value> {
+        self.call_at(f, arg, None)
+    }
+
+    /// Applies `f` to `arg`; `site` is the position of the application in
+    /// the source, if there is one.
+    pub fn call_at(&self, f: &Value, arg: Value, site: Option<Pos>) -> R<Value> {
         match f {
-            Value::Lambda(c) => self.call_lambda(c, arg),
+            Value::Lambda(c) => {
+                let r = self.call_lambda(c, arg, site);
+                r.map_err(|mut e| {
+                    e.trace.push(Frame::detail(format!("while calling {}", Self::fn_name(c.def)), Some(c.def.pos)));
+                    if site.is_some() {
+                        e.trace.push(Frame::detail("from call site", site));
+                    }
+                    e
+                })
+            }
             Value::PrimOp(app) => {
                 if app.args.len() + 1 == app.op.arity {
                     let mut args = Vec::with_capacity(app.op.arity);
                     args.extend(app.args.iter().cloned());
                     args.push(arg);
-                    self.with_frame((app.op.f)(self, &args), || format!("while calling the '{}' builtin", app.op.name))
+                    self.with_frame((app.op.f)(self, &args), || {
+                        Frame::new(format!("while calling the '{}' builtin", app.op.name), site)
+                    })
                 } else {
                     let mut args = app.args.clone();
                     args.push(arg);
@@ -495,16 +542,16 @@ impl Eval {
             Value::Attrs(a) => match a.get(&self.syms.functor) {
                 Some(fun) => {
                     let fun = self.force(fun)?;
-                    let g = self.call(&fun, f.clone())?;
-                    self.call(&g, arg)
+                    let g = self.call_at(&fun, f.clone(), site)?;
+                    self.call_at(&g, arg, site)
                 }
-                None => err("attempt to call something which is not a function but a set"),
+                None => err(format!("attempt to call something which is not a function but a set: {}", self.preview(f))),
             },
             Value::Thunk(_) => {
                 let f = self.force(f)?;
-                self.call(&f, arg)
+                self.call_at(&f, arg, site)
             }
-            v => err(format!("attempt to call something which is not a function but {}", v.describe())),
+            v => err(format!("attempt to call something which is not a function but {}: {}", v.describe(), self.preview(v))),
         }
     }
 
@@ -515,43 +562,64 @@ impl Eval {
 
     fn fn_name(def: &LambdaDef) -> String {
         match &def.name {
-            Some(n) => format!("function '{n}'"),
-            None => "anonymous function".to_string(),
+            Some(n) => format!("'{n}'"),
+            None => "anonymous lambda".to_string(),
         }
     }
 
-    fn call_lambda(&self, c: &Rc<Closure>, arg: Value) -> R<Value> {
+    fn call_lambda(&self, c: &Rc<Closure>, arg: Value, site: Option<Pos>) -> R<Value> {
         let d = self.depth.get();
         if d > MAX_CALL_DEPTH {
             return err("stack overflow; max-call-depth exceeded");
         }
         self.depth.set(d + 1);
-        let r = self.call_lambda_inner(c, arg);
+        let r = self.call_lambda_inner(c, arg, site);
         self.depth.set(d);
         r
     }
 
-    fn call_lambda_inner(&self, c: &Rc<Closure>, arg: Value) -> R<Value> {
+    /// An error in matching the argument of a call to the function `def`:
+    /// raised at the function, with the call site in the trace.
+    fn arg_error<T>(&self, def: &LambdaDef, site: Option<Pos>, msg: String, hint: Option<String>) -> R<T> {
+        let mut e = EvalError::new(ErrKind::Other, msg);
+        e.pos = Some(def.pos);
+        e.hint = hint;
+        if site.is_some() {
+            e.trace.push(Frame::new("from call site", site));
+        }
+        Err(Box::new(e))
+    }
+
+    fn call_lambda_inner(&self, c: &Rc<Closure>, arg: Value, site: Option<Pos>) -> R<Value> {
         let def = c.def;
         let Some(formals) = &def.formals else {
             let en = Env::new(Some(c.env.clone()), vec![arg]);
             return self.eval(def.body, &en);
         };
-        let attrs = match self.force(&arg)? {
-            Value::Attrs(a) => a,
-            v => {
-                return err(format!(
-                    "{} at {} called with {} but expected a set",
-                    Self::fn_name(def),
-                    self.fmt_pos(def.pos),
-                    v.describe()
-                ))
+        let name = match &def.name {
+            Some(n) => format!("function '{n}'"),
+            None => "function 'anonymous lambda'".to_string(),
+        };
+        let attrs = match self.force(&arg) {
+            Ok(Value::Attrs(a)) => a,
+            r => {
+                let r = match r {
+                    Ok(v) => err(format!("{name} called with {} but expects a set: {}", v.describe(), self.preview(&v))),
+                    Err(e) => Err(e),
+                };
+                return r.map_err(|mut e| {
+                    e.trace.push(Frame::new("while evaluating the value passed for the lambda argument", Some(def.pos)));
+                    if site.is_some() {
+                        e.trace.push(Frame::new("from call site", site));
+                    }
+                    e
+                });
             }
         };
         let en = Env::new(Some(c.env.clone()), vec![Value::Null; def.n_slots]);
         let mut matched = 0;
-        for (i, (name, default)) in formals.entries.iter().enumerate() {
-            match attrs.get(name) {
+        for (i, (fname, default)) in formals.entries.iter().enumerate() {
+            match attrs.get(fname) {
                 Some(v) => {
                     matched += 1;
                     en.set(i, v.clone());
@@ -559,23 +627,30 @@ impl Eval {
                 None => match default {
                     Some(d) => en.set(i, self.lazy(d, &en, false)),
                     None => {
-                        return err(format!(
-                            "{} called without required argument '{name}'\n       at {}",
-                            Self::fn_name(def),
-                            self.fmt_pos(def.pos)
-                        ))
+                        // Only names the function does not take can be misspellings.
+                        let passed: Vec<&str> = attrs
+                            .iter()
+                            .map(|(k, _)| k.as_str())
+                            .filter(|k| !formals.entries.iter().any(|(n, _)| n.as_str() == *k))
+                            .collect();
+                        let hint = crate::error::close_matches(fname.as_str(), passed.iter().copied())
+                            .first()
+                            .map(|p| format!("Did you mean to pass '{fname}' instead of '{p}'?"));
+                        return self.arg_error(def, site, format!("{name} called without required argument '{fname}'"), hint);
                     }
                 },
             }
         }
         if !formals.ellipsis && matched != attrs.len() {
             let extra = attrs.iter().find(|(k, _)| !formals.entries.iter().any(|(n, _)| n == k)).unwrap();
-            return err(format!(
-                "{} called with unexpected argument '{}'\n       at {}",
-                Self::fn_name(def),
-                extra.0,
-                self.fmt_pos(def.pos)
-            ));
+            let valid: Vec<&str> = formals.entries.iter().map(|(n, _)| n.as_str()).collect();
+            let hint = crate::error::did_you_mean(extra.0.as_str(), valid.iter().copied()).or_else(|| {
+                Some(match valid.len() {
+                    0 => "The function takes no arguments.".to_string(),
+                    _ => format!("The function accepts {}.", crate::error::and_list(&valid)),
+                })
+            });
+            return self.arg_error(def, site, format!("{name} called with unexpected argument '{}'", extra.0), hint);
         }
         if def.arg.is_some() {
             en.set(def.n_slots - 1, arg);
@@ -588,35 +663,35 @@ impl Eval {
     pub fn force_attrs(&self, v: &Value) -> R<Rc<Attrs>> {
         match self.force(v)? {
             Value::Attrs(a) => Ok(a),
-            v => err(format!("expected a set but found {}", v.describe())),
+            v => self.type_error("a set", &v),
         }
     }
 
     pub fn force_list(&self, v: &Value) -> R<Rc<Vec<Value>>> {
         match self.force(v)? {
             Value::List(l) => Ok(l),
-            v => err(format!("expected a list but found {}", v.describe())),
+            v => self.type_error("a list", &v),
         }
     }
 
     pub fn force_int(&self, v: &Value) -> R<i64> {
         match self.force(v)? {
             Value::Int(n) => Ok(n),
-            v => err(format!("expected an integer but found {}", v.describe())),
+            v => self.type_error("an integer", &v),
         }
     }
 
     pub fn force_bool(&self, v: &Value) -> R<bool> {
         match self.force(v)? {
             Value::Bool(b) => Ok(b),
-            v => err(format!("expected a Boolean but found {}", v.describe())),
+            v => self.type_error("a Boolean", &v),
         }
     }
 
     pub fn force_str(&self, v: &Value) -> R<Rc<NixStr>> {
         match self.force(v)? {
             Value::Str(s) => Ok(s),
-            v => err(format!("expected a string but found {}", v.describe())),
+            v => self.type_error("a string", &v),
         }
     }
 
@@ -630,7 +705,7 @@ impl Eval {
         match &v {
             Value::Lambda(_) | Value::PrimOp(_) => Ok(v),
             Value::Attrs(a) if a.get(&self.syms.functor).is_some() => Ok(v),
-            _ => err(format!("expected a function but found {}", v.describe())),
+            _ => self.type_error("a function", &v),
         }
     }
 
@@ -649,7 +724,7 @@ impl Eval {
                     return Ok(());
                 }
                 for (k, x) in a.iter() {
-                    let x = self.with_frame(self.force(x), || format!("while evaluating the attribute '{k}'"))?;
+                    let x = self.with_frame(self.force(x), || Frame::new(format!("while evaluating the attribute '{k}'"), None))?;
                     self.deep_force_inner(&x, seen)?;
                 }
             }
@@ -657,8 +732,8 @@ impl Eval {
                 if !seen.insert(Rc::as_ptr(l) as usize) {
                     return Ok(());
                 }
-                for x in l.iter() {
-                    let x = self.force(x)?;
+                for (i, x) in l.iter().enumerate() {
+                    let x = self.with_frame(self.force(x), || Frame::detail(format!("while evaluating list element {i}"), None))?;
                     self.deep_force_inner(&x, seen)?;
                 }
             }
@@ -705,7 +780,7 @@ impl Eval {
                 if let Some(p) = a.get(&self.syms.out_path) {
                     return self.coerce_to_string(p, o, ctx);
                 }
-                err("cannot coerce a set to a string")
+                err(format!("cannot coerce a set to a string: {}", self.preview(&v)))
             }
             Value::Null if o.more => Ok(String::new()),
             Value::Bool(b) if o.more => Ok(if *b { "1".into() } else { String::new() }),
@@ -724,7 +799,7 @@ impl Eval {
                 }
                 Ok(out)
             }
-            v => err(format!("cannot coerce {} to a string", v.describe())),
+            v => err(format!("cannot coerce {} to a string: {}", v.describe(), self.preview(v))),
         }
     }
 
@@ -750,11 +825,13 @@ impl Eval {
 
     // ---- operators ----
 
-    fn binop(&self, op: BinOp, l: &'static Expr, r: &'static Expr, env: &Rc<Env>) -> R<Value> {
+    fn binop(&self, op: BinOp, l: &'static Expr, r: &'static Expr, env: &Rc<Env>, pos: Pos) -> R<Value> {
+        let lhs = |s: &Self| s.eval_bool(l, env, "left", op, pos);
+        let rhs = |s: &Self| s.eval_bool(r, env, "right", op, pos);
         match op {
-            BinOp::And => return Ok(Value::Bool(self.eval_bool(l, env)? && self.eval_bool(r, env)?)),
-            BinOp::Or => return Ok(Value::Bool(self.eval_bool(l, env)? || self.eval_bool(r, env)?)),
-            BinOp::Impl => return Ok(Value::Bool(!self.eval_bool(l, env)? || self.eval_bool(r, env)?)),
+            BinOp::And => return Ok(Value::Bool(lhs(self)? && rhs(self)?)),
+            BinOp::Or => return Ok(Value::Bool(lhs(self)? || rhs(self)?)),
+            BinOp::Impl => return Ok(Value::Bool(!lhs(self)? || rhs(self)?)),
             _ => {}
         }
         let a = self.eval(l, env)?;
@@ -767,13 +844,13 @@ impl Eval {
             BinOp::Le => Ok(Value::Bool(self.compare(&b, &a)? != Ordering::Less)),
             BinOp::Ge => Ok(Value::Bool(self.compare(&a, &b)? != Ordering::Less)),
             BinOp::Update => {
-                let x = self.as_attrs(&a)?;
-                let y = self.as_attrs(&b)?;
+                let x = self.operand_attrs(&a, "left")?;
+                let y = self.operand_attrs(&b, "right")?;
                 Ok(Value::Attrs(Attrs::update(&x, &y)))
             }
             BinOp::Concat => {
-                let x = self.as_list(&a)?;
-                let y = self.as_list(&b)?;
+                let x = self.operand_list(&a, "left")?;
+                let y = self.operand_list(&b, "right")?;
                 if x.is_empty() {
                     return Ok(Value::List(y));
                 }
@@ -791,17 +868,27 @@ impl Eval {
         }
     }
 
-    fn as_attrs(&self, v: &Value) -> R<Rc<Attrs>> {
+    fn operand_attrs(&self, v: &Value, side: &str) -> R<Rc<Attrs>> {
         match v {
             Value::Attrs(a) => Ok(a.clone()),
-            v => err(format!("expected a set but found {}", v.describe())),
+            v => err(format!(
+                "expected a set but found {} in the {side} operand of {}: {}",
+                v.describe(),
+                op_name(BinOp::Update),
+                self.preview(v)
+            )),
         }
     }
 
-    fn as_list(&self, v: &Value) -> R<Rc<Vec<Value>>> {
+    fn operand_list(&self, v: &Value, side: &str) -> R<Rc<Vec<Value>>> {
         match v {
             Value::List(l) => Ok(l.clone()),
-            v => err(format!("expected a list but found {}", v.describe())),
+            v => err(format!(
+                "expected a list but found {} in the {side} operand of {}: {}",
+                v.describe(),
+                op_name(BinOp::Concat),
+                self.preview(v)
+            )),
         }
     }
 
@@ -827,11 +914,11 @@ impl Eval {
     }
 
     pub fn arith(&self, op: BinOp, a: &Value, b: &Value) -> R<Value> {
-        let name = match op {
-            BinOp::Add => "add",
-            BinOp::Sub => "subtract",
-            BinOp::Mul => "multiply",
-            _ => "divide",
+        let doing = match op {
+            BinOp::Add => "adding",
+            BinOp::Sub => "subtracting",
+            BinOp::Mul => "multiplying",
+            _ => "dividing",
         };
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => {
@@ -846,7 +933,7 @@ impl Eval {
                         x.checked_div(*y)
                     }
                 };
-                r.map(Value::Int).ok_or(()).or_else(|_| err(format!("integer overflow in {name}ing {x} and {y}")))
+                r.map(Value::Int).ok_or(()).or_else(|_| err(format!("integer overflow in {doing} {x} and {y}")))
             }
             (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => {
                 let x = num(a);
@@ -863,8 +950,16 @@ impl Eval {
                     }
                 }))
             }
-            (Value::Int(_) | Value::Float(_), _) => err(format!("cannot {name} {} and {}", a.describe(), b.describe())),
-            _ => err(format!("expected an integer but found {}", a.describe())),
+            (Value::Int(_) | Value::Float(_), _) => {
+                let what = match op {
+                    BinOp::Add => format!("add {} to {}", b.describe(), a.describe()),
+                    BinOp::Sub => format!("subtract {} from {}", b.describe(), a.describe()),
+                    BinOp::Mul => format!("multiply {} by {}", a.describe(), b.describe()),
+                    _ => format!("divide {} by {}", a.describe(), b.describe()),
+                };
+                err(format!("cannot {what}: {}", self.preview(b)))
+            }
+            _ => err(format!("expected an integer or a float but found {}: {}", a.describe(), self.preview(a))),
         }
     }
 
@@ -958,29 +1053,14 @@ fn lookup(env: &Rc<Env>, up: u32) -> &Rc<Env> {
     e
 }
 
-fn suggest(a: &Attrs, k: &Sym) -> String {
-    let close: Vec<&str> = a
-        .iter()
-        .map(|(s, _)| s.as_str())
-        .filter(|s| levenshtein(s, k.as_str()) <= 2)
-        .take(3)
-        .collect();
-    if close.is_empty() {
-        String::new()
-    } else {
-        format!("; did you mean {}?", close.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", "))
+/// How errors refer to an operator.
+fn op_name(op: BinOp) -> &'static str {
+    match op {
+        BinOp::And => "the AND (&&) operator",
+        BinOp::Or => "the OR (||) operator",
+        BinOp::Impl => "the implication (->) operator",
+        BinOp::Update => "the update (//) operator",
+        BinOp::Concat => "the list concatenation (++) operator",
+        _ => "an operator",
     }
-}
-
-fn levenshtein(a: &str, b: &str) -> usize {
-    let b: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut cur = vec![i + 1];
-        for (j, cb) in b.iter().enumerate() {
-            cur.push((prev[j] + (ca != *cb) as usize).min(prev[j + 1] + 1).min(cur[j] + 1));
-        }
-        prev = cur;
-    }
-    prev[b.len()]
 }

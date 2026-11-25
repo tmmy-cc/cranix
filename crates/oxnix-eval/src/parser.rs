@@ -122,7 +122,7 @@ impl<'a> Parser<'a> {
                 i += 2;
                 loop {
                     if i + 1 >= s.len() {
-                        return self.err(start, "unterminated comment");
+                        return self.err(start, "unterminated comment: '/*' without a matching '*/'");
                     }
                     if s[i] == b'*' && s[i + 1] == b'/' {
                         i += 2;
@@ -364,7 +364,7 @@ impl<'a> Parser<'a> {
         let e = self.expr()?;
         let (t, at) = self.next()?;
         if t != Tok::Eof {
-            return self.err(at, format!("syntax error, unexpected {}", describe(&t)));
+            return self.err(at, format!("syntax error, unexpected {}, expecting end of file", describe(&t)));
         }
         Ok(e)
     }
@@ -486,10 +486,12 @@ impl<'a> Parser<'a> {
                     match self.next()? {
                         (Tok::Sym(","), _) => {}
                         (Tok::Sym("}"), _) => break,
-                        (t, at) => return self.err(at, format!("syntax error, unexpected {} in formals", describe(&t))),
+                        (t, at) => return self.err(at, format!("syntax error, unexpected {}, expecting ',' or '}}'", describe(&t))),
                     }
                 }
-                (t, at) => return self.err(at, format!("syntax error, unexpected {} in formals", describe(&t))),
+                (t, at) => {
+                    return self.err(at, format!("syntax error, unexpected {}, expecting an argument name, '...' or '}}'", describe(&t)))
+                }
             }
         }
         Ok(f)
@@ -537,13 +539,18 @@ impl<'a> Parser<'a> {
                             }
                         }
                         Tok::Interp => return self.err(at, "dynamic attributes not allowed in inherit"),
-                        t => return self.err(at, format!("syntax error, unexpected {} in inherit", describe(&t))),
+                        t => return self.err(at, format!("syntax error, unexpected {}, expecting an attribute name or ';'", describe(&t))),
                     }
                 }
                 out.push(Binding::Inherit(from, names));
                 continue;
             }
-            let path = self.attrpath()?;
+            let path = self.attrpath().map_err(|mut e| {
+                if e.offset == start {
+                    e.msg = e.msg.replace("expecting an attribute name", &format!("expecting an attribute name, 'inherit' or '{end}'"));
+                }
+                e
+            })?;
             self.expect("=")?;
             let e = self.expr()?;
             self.expect(";")?;
@@ -569,7 +576,7 @@ impl<'a> Parser<'a> {
                 let parts = self.string_body()?;
                 match static_string(&parts) {
                     Some(s) => Ok(AttrName::Static(Sym::new(&s))),
-                    None => Ok(AttrName::Dynamic(Ast::Str(parts))),
+                    None => Ok(AttrName::Dynamic(Ast::Str(parts, self.mkpos(at)))),
                 }
             }
             Tok::Interp => {
@@ -577,7 +584,7 @@ impl<'a> Parser<'a> {
                 self.expect("}")?;
                 Ok(AttrName::Dynamic(e))
             }
-            t => self.err(at, format!("syntax error, unexpected {}, expecting attribute name", describe(&t))),
+            t => self.err(at, format!("syntax error, unexpected {}, expecting an attribute name", describe(&t))),
         }
     }
 
@@ -713,7 +720,7 @@ impl<'a> Parser<'a> {
             Tok::Path(p) => Ast::Path(self.resolve_path(&p)),
             Tok::HPath(p) => Ast::Path(canon_path(&format!("{}{}", self.home, p))),
             Tok::SPath(p) => Ast::SearchPath(p, pos),
-            Tok::Uri(u) => Ast::Str(vec![StrPart::Lit(u)]),
+            Tok::Uri(u) => Ast::Str(vec![StrPart::Lit(u)], pos),
             Tok::PathStart(p) => {
                 let mut prefix = self.resolve_path(&p);
                 if p.ends_with('/') && !prefix.ends_with('/') {
@@ -742,8 +749,8 @@ impl<'a> Parser<'a> {
                 }
                 Ast::PathInterp(parts, pos)
             }
-            Tok::DQuote => Ast::Str(self.string_body()?),
-            Tok::IndOpen => Ast::Str(self.ind_string_body()?),
+            Tok::DQuote => Ast::Str(self.string_body()?, pos),
+            Tok::IndOpen => Ast::Str(self.ind_string_body()?, pos),
             Tok::Sym("(") => {
                 let e = self.expr()?;
                 self.expect(")")?;
@@ -774,7 +781,7 @@ impl<'a> Parser<'a> {
                 self.expect("}")?;
                 Ast::LegacyLet(b, pos)
             }
-            t => return self.err(at, format!("syntax error, unexpected {}", describe(&t))),
+            t => return self.err(at, format!("syntax error, unexpected {}, expecting an expression", describe(&t))),
         })
     }
 
@@ -790,13 +797,12 @@ impl<'a> Parser<'a> {
     /// Body of a `"..."` string; the opening quote is consumed.
     fn string_body(&mut self) -> R<Vec<StrPart>> {
         let s = self.src;
-        let start = self.pos;
         let mut parts = Vec::new();
         let mut buf: Vec<u8> = Vec::new();
         loop {
             let i = self.pos;
             if i >= s.len() {
-                return self.err(start, "unterminated string");
+                return self.err(i, "syntax error, unexpected end of file, expecting '\"'");
             }
             match s[i] {
                 b'"' => {
@@ -851,7 +857,6 @@ impl<'a> Parser<'a> {
             Interp(Ast),
         }
         let s = self.src;
-        let start = self.pos;
         let mut raw: Vec<P> = Vec::new();
         let mut buf: Vec<u8> = Vec::new();
         let flush = |buf: &mut Vec<u8>, raw: &mut Vec<P>| {
@@ -862,7 +867,7 @@ impl<'a> Parser<'a> {
         loop {
             let i = self.pos;
             if i >= s.len() {
-                return self.err(start, "unterminated indented string");
+                return self.err(i, "syntax error, unexpected end of file, expecting \"''\"");
             }
             if s[i] == b'\'' && s.get(i + 1) == Some(&b'\'') {
                 match s.get(i + 2) {
@@ -1003,6 +1008,18 @@ impl<'a> Parser<'a> {
         }
         Ok(out)
     }
+}
+
+/// Source text of the condition of the `assert` keyword at `offset`.
+pub fn assert_condition(src: &str, offset: usize) -> Option<String> {
+    let mut p = Parser::new(src, 0, "/");
+    p.pos = offset;
+    if p.next().ok()?.0 != Tok::Kw("assert") {
+        return None;
+    }
+    let start = p.tok_start().ok()?;
+    p.expr().ok()?;
+    Some(src.get(start..p.pos)?.to_string())
 }
 
 fn static_string(parts: &[StrPart]) -> Option<String> {

@@ -233,7 +233,7 @@ fn derivation_inner(ev: &Eval, attrs: &Attrs, name: &str) -> R<Value> {
         }
     });
     if let Err(m) = r {
-        return Err(failure.unwrap_or_else(|| Box::new(crate::eval::EvalError { kind: crate::eval::ErrKind::Other, msg: m, trace: vec![] })));
+        return Err(failure.unwrap_or_else(|| Box::new(crate::eval::EvalError::new(crate::eval::ErrKind::Other, m))));
     }
 
     let text = drv.to_aterm(sd);

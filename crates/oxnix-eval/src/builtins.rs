@@ -46,9 +46,7 @@ pub static PRIMOPS: &[PrimOp] = &[
     prim!("addErrorContext", 2, |ev, a| {
         ev.force(&a[1]).map_err(|mut e| {
             if let Ok(s) = ev.force_str(&a[0]) {
-                if e.trace.len() < 12 {
-                    e.trace.push(s.s.trim_start_matches("while ").to_string().replace("\n", " "));
-                }
+                e.trace.push(s.s.clone());
             }
             e
         })

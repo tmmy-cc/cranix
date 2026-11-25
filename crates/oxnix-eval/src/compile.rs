@@ -78,6 +78,15 @@ pub struct Compiler {
 pub struct CompileError {
     pub pos: Pos,
     pub msg: String,
+    /// An earlier definition the error refers to.
+    pub prev: Option<Pos>,
+    pub hint: Option<String>,
+}
+
+impl CompileError {
+    fn new(pos: Pos, msg: impl Into<String>) -> CompileError {
+        CompileError { pos, msg: msg.into(), prev: None, hint: None }
+    }
 }
 
 type R<T> = Result<T, CompileError>;
@@ -96,8 +105,18 @@ struct Tree {
     sources: Vec<Ast>,
 }
 
-fn dup(name: &Sym, pos: Pos) -> CompileError {
-    CompileError { pos, msg: format!("attribute '{name}' already defined") }
+fn dup(name: &Sym, pos: Pos, prev: Option<&Node>) -> CompileError {
+    let mut e = CompileError::new(pos, format!("attribute '{name}' already defined"));
+    e.prev = prev.map(Node::pos);
+    e
+}
+
+impl Node {
+    fn pos(&self) -> Pos {
+        match self {
+            Node::Leaf(_, p) | Node::Inherit(_, p) | Node::InheritFrom(_, _, p) | Node::Nested(_, p) => *p,
+        }
+    }
 }
 
 impl Tree {
@@ -117,8 +136,8 @@ impl Tree {
                     self.sources.len() - 1
                 });
                 for (n, pos) in names {
-                    if self.statics.contains_key(&n) {
-                        return Err(dup(&n, pos));
+                    if let Some(prev) = self.statics.get(&n) {
+                        return Err(dup(&n, pos, Some(prev)));
                     }
                     let node = match src {
                         Some(i) => Node::InheritFrom(i, n.clone(), pos),
@@ -154,15 +173,20 @@ impl Tree {
             return Ok(());
         };
         // `a.b = 1; a.c = 2;` and `a = { b = 1; }; a.c = 2;` merge.
+        let prev_pos = existing.pos();
         let mut merged = match existing {
             Node::Nested(t, p) => (t, p),
             Node::Leaf(Ast::Attrs { rec: false, bindings, .. }, p) => (Tree::from_bindings(bindings)?, p),
-            _ => return Err(dup(&name, pos)),
+            e => return Err(dup(&name, pos, Some(&e))),
         };
         let incoming = match node {
             Node::Nested(t, _) => t,
             Node::Leaf(Ast::Attrs { rec: false, bindings, .. }, _) => Tree::from_bindings(bindings)?,
-            _ => return Err(dup(&name, pos)),
+            _ => {
+                let mut e = dup(&name, pos, None);
+                e.prev = Some(prev_pos);
+                return Err(e);
+            }
         };
         merged.0.merge(incoming)?;
         self.statics.insert(name, Node::Nested(merged.0, merged.1));
@@ -177,9 +201,7 @@ impl Tree {
                 Node::InheritFrom(i, n, p) => Node::InheritFrom(i + offset, n, p),
                 v => v,
             };
-            let pos = match &v {
-                Node::Leaf(_, p) | Node::Inherit(_, p) | Node::InheritFrom(_, _, p) | Node::Nested(_, p) => *p,
-            };
+            let pos = v.pos();
             self.insert(k, v, pos)?;
         }
         self.dynamics.extend(other.dynamics);
@@ -212,7 +234,10 @@ impl Compiler {
         if has_with {
             Ok(Expr::WithVar { name: name.clone(), pos })
         } else {
-            Err(CompileError { pos, msg: format!("undefined variable '{name}'") })
+            let mut e = CompileError::new(pos, format!("undefined variable '{name}'"));
+            let names = self.scopes.iter().flat_map(|s| s.names.keys()).map(Sym::as_str).filter(|n| !n.starts_with("__"));
+            e.hint = crate::error::did_you_mean(name.as_str(), names);
+            Err(e)
         }
     }
 
@@ -260,7 +285,7 @@ impl Compiler {
         Ok(match ast {
             Ast::Int(n) => leak(Expr::Const(Value::Int(n))),
             Ast::Float(f) => leak(Expr::Const(Value::Float(f))),
-            Ast::Str(parts) => self.concat(parts, false, Pos::default())?,
+            Ast::Str(parts, pos) => self.concat(parts, false, pos)?,
             Ast::Path(p) => leak(Expr::Const(Value::Path(p.into()))),
             Ast::PathInterp(parts, pos) => self.concat(parts, true, pos)?,
             Ast::SearchPath(p, pos) => {
@@ -330,7 +355,7 @@ impl Compiler {
             Ast::Let(bindings, body, pos) => {
                 let tree = Tree::from_bindings(bindings)?;
                 if !tree.dynamics.is_empty() {
-                    return Err(CompileError { pos, msg: "dynamic attributes not allowed in let".into() });
+                    return Err(CompileError::new(pos, "dynamic attributes not allowed in let"));
                 }
                 let (slots, _statics) = self.rec_scope(tree)?;
                 let body = self.expr(*body, None);
