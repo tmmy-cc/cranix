@@ -383,21 +383,57 @@ impl Store {
     fn builtin_fetchurl(&self, drv: &Derivation, out: &StorePath) -> Result<()> {
         let url = drv.env.get("url").ok_or("builtin:fetchurl requires 'url'")?;
         let real = self.real_path(out);
+        // With `unpack`, the download is a (possibly compressed) NAR that is
+        // restored as the output.
+        let unpack = drv.env.get("unpack").is_some_and(|v| v == "1");
+        let dest = if unpack { real.with_extension("download") } else { real.clone() };
         eprintln!("downloading '{url}'");
         let st = Command::new("curl")
             .args(["--fail", "--location", "--silent", "--show-error", "--output"])
-            .arg(&real)
+            .arg(&dest)
             .arg(url)
             .status()
             .map_err(|e| format!("running curl: {e}"))?;
         if !st.success() {
             return Err(format!("downloading '{url}' failed ({st})"));
         }
+        if unpack {
+            let r = unpack_nar(url, &dest, &real);
+            let _ = fs::remove_file(&dest);
+            return r;
+        }
         if drv.env.get("executable").is_some_and(|v| v == "1") {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+}
+
+/// Restores the NAR in `file` to `dest`, decompressing by the URL's
+/// extension like Nix's builtin fetcher.
+fn unpack_nar(url: &str, file: &Path, dest: &Path) -> Result<()> {
+    let tool = [(".xz", "xz"), (".bz2", "bzip2"), (".zst", "zstd"), (".gz", "gzip"), (".br", "brotli")]
+        .iter()
+        .find(|(ext, _)| url.ends_with(ext))
+        .map(|(_, t)| *t);
+    let err = |e: std::io::Error| format!("unpacking '{url}': {e}");
+    match tool {
+        None => nar::restore(fs::File::open(file).map_err(err)?, dest).map_err(err),
+        Some(t) => {
+            let mut child = Command::new(t)
+                .args(["-d", "-c"])
+                .arg(file)
+                .stdout(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("running {t}: {e}"))?;
+            let r = nar::restore(child.stdout.take().unwrap(), dest).map_err(err);
+            let st = child.wait().map_err(|e| format!("waiting for {t}: {e}"))?;
+            if !st.success() {
+                return Err(format!("decompressing '{url}' with {t} failed ({st})"));
+            }
+            r
+        }
     }
 }
 
