@@ -1,0 +1,13 @@
+# mimalloc's C sources must be compiled with clang on macOS: GCC there
+# implements thread-locals through libgcc's emulated TLS, which the Rust
+# link does not provide.
+[env]
+CC_aarch64_apple_darwin = "clang"
+CC_x86_64_apple_darwin = "clang"
+
+# Link with the same toolchain; GCC does not see the SDK's libiconv.
+[target.aarch64-apple-darwin]
+linker = "clang"
+
+[target.x86_64-apple-darwin]
+linker = "clang"

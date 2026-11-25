@@ -1,0 +1,22 @@
+[package]
+name = "oxnix"
+description = "Command line interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "oxnix"
+path = "src/main.rs"
+
+[dependencies]
+oxnix-core.workspace = true
+oxnix-store.workspace = true
+oxnix-eval.workspace = true
+serde_json.workspace = true
+mimalloc.workspace = true
+dhat = { version = "0.3", optional = true }
+
+[features]
+# Heap profiling: writes dhat-heap.json, viewable with dhat's dh_view.html.
+dhat-heap = ["dep:dhat"]
