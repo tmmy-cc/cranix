@@ -7,6 +7,7 @@
 //! `~/.local/share/oxnix` can still compute and hold `/nix/store` paths.
 
 pub mod build;
+pub mod config;
 mod fsutil;
 pub mod refs;
 
