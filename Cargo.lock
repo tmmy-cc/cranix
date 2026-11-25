@@ -379,6 +379,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxnix-daemon"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "oxnix-core",
+ "oxnix-store",
+ "serde_json",
+]
+
+[[package]]
 name = "oxnix-eval"
 version = "0.1.0"
 dependencies = [

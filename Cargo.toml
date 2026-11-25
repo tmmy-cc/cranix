@@ -12,6 +12,7 @@ rust-version = "1.83"
 oxnix-core = { path = "crates/oxnix-core" }
 oxnix-store = { path = "crates/oxnix-store" }
 oxnix-eval = { path = "crates/oxnix-eval" }
+oxnix-daemon = { path = "crates/oxnix-daemon" }
 sha2 = "0.10"
 sha1 = "0.10"
 md-5 = "0.10"
