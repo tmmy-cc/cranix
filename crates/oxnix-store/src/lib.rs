@@ -12,6 +12,8 @@ pub mod config;
 mod fsutil;
 pub mod http;
 pub mod narinfo_cache;
+pub mod gc_roots;
+mod nar_import;
 pub mod refs;
 pub mod substitute;
 pub mod sandbox;
