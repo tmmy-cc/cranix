@@ -400,6 +400,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxnix-fetchers"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "oxnix-core",
+ "oxnix-store",
+ "regex",
+ "serde_json",
+]
+
+[[package]]
 name = "oxnix-store"
 version = "0.1.0"
 dependencies = [
