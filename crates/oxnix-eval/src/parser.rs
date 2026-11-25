@@ -327,7 +327,8 @@ impl<'a> Parser<'a> {
 
     fn peek2(&self) -> R<(Tok, Tok)> {
         let (a, _, e) = self.lex_at(self.pos)?;
-        // The text after an opening quote or path prefix is not code.
+        // An opening quote or path prefix starts string text, which the
+        // caller scans itself.
         if matches!(a, Tok::DQuote | Tok::IndOpen | Tok::PathStart(_) | Tok::Interp) {
             return Ok((a, Tok::Eof));
         }
