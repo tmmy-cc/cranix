@@ -35,6 +35,19 @@ pub struct Store {
     pub dir: StoreDir,
     real: PathBuf,
     state: PathBuf,
+    /// Shared `flock` on `state/gc.lock`, held for the handle's lifetime so
+    /// garbage collection can tell the store is in use.
+    lock: fs::File,
+}
+
+fn flock(f: &fs::File, op: i32) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: flock only reads the descriptor, which `f` keeps open.
+    if unsafe { libc::flock(f.as_raw_fd(), op) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 pub type Result<T> = std::result::Result<T, String>;
@@ -50,7 +63,15 @@ impl Store {
         for d in [&real, &state.join("db"), &state.join("gcroots"), &state.join("log")] {
             fs::create_dir_all(d).map_err(io_err(format!("creating '{}'", d.display())))?;
         }
-        Ok(Store { dir, real, state })
+        let lock_path = state.join("gc.lock");
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .map_err(io_err(format!("opening '{}'", lock_path.display())))?;
+        flock(&lock, libc::LOCK_SH).map_err(io_err("locking the store"))?;
+        Ok(Store { dir, real, state, lock })
     }
 
     /// A store where the logical and physical directories coincide; this is
@@ -310,7 +331,17 @@ impl Store {
 
     /// Deletes every object not reachable from a GC root. Returns the
     /// deleted paths and the bytes freed (as NAR size).
+    /// Fails while another process has the store open, since its new paths
+    /// may not be rooted yet.
     pub fn collect_garbage(&self, dry_run: bool) -> Result<(Vec<StorePath>, u64)> {
+        flock(&self.lock, libc::LOCK_EX | libc::LOCK_NB)
+            .map_err(|_| "another oxnix process is using the store; run garbage collection when it has finished".to_string())?;
+        let r = self.collect_garbage_locked(dry_run);
+        flock(&self.lock, libc::LOCK_SH).map_err(io_err("locking the store"))?;
+        r
+    }
+
+    fn collect_garbage_locked(&self, dry_run: bool) -> Result<(Vec<StorePath>, u64)> {
         let live = self.closure(self.roots()?)?;
         let mut dead = Vec::new();
         let mut freed = 0;
