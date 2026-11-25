@@ -11,6 +11,7 @@ pub mod build;
 pub mod config;
 mod fsutil;
 pub mod refs;
+pub mod substitute;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -40,6 +41,8 @@ pub struct Store {
     /// Shared `flock` on `state/gc.lock`, held for the handle's lifetime so
     /// garbage collection can tell the store is in use.
     lock: fs::File,
+    /// Binary caches consulted for missing paths; none by default.
+    subst: substitute::Substituters,
 }
 
 fn flock(f: &fs::File, op: i32) -> io::Result<()> {
@@ -73,7 +76,7 @@ impl Store {
             .open(&lock_path)
             .map_err(io_err(format!("opening '{}'", lock_path.display())))?;
         flock(&lock, libc::LOCK_SH).map_err(io_err("locking the store"))?;
-        Ok(Store { dir, real, state, lock })
+        Ok(Store { dir, real, state, lock, subst: Default::default() })
     }
 
     /// A store where the logical and physical directories coincide; this is
