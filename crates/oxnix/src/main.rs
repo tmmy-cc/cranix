@@ -190,10 +190,13 @@ fn eval_target(ev: &Eval, cli: &Cli, t: &Target) -> oxnix_eval::R<Value> {
     v = auto_call(ev, cli, v)?;
     if let Some(path) = &t.attr {
         for k in path.split('.').filter(|k| !k.is_empty()) {
-            let a = ev.force_attrs(&v)?;
-            v = match k.parse::<usize>() {
-                Ok(i) if a.is_empty() => return oxnix_eval::eval::err(format!("index {i} into a set")),
-                _ => match a.get(&Sym::new(k)) {
+            // Numeric components index into lists, as in nix-instantiate.
+            v = match (ev.force(&v)?, k.parse::<usize>()) {
+                (Value::List(l), Ok(i)) => match l.get(i) {
+                    Some(x) => ev.force(x)?,
+                    None => return oxnix_eval::eval::err(format!("list index {i} in selection path '{path}' is out of bounds")),
+                },
+                (v, _) => match ev.force_attrs(&v)?.get(&Sym::new(k)) {
                     Some(x) => ev.force(x)?,
                     None => return oxnix_eval::eval::err(format!("attribute '{k}' in selection path '{path}' not found")),
                 },
