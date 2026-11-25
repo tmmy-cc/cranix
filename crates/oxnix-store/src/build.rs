@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use oxnix_core::hash::{Hash, HashAlgo, HashSink};
@@ -44,6 +44,20 @@ pub struct BuildOptions {
     pub timeout: u64,
     /// Seconds a build may go without output; 0 for no limit.
     pub max_silent_time: u64,
+    /// Consulted before every local build, e.g. to use remote builders.
+    pub hook: Option<Arc<dyn BuildHook>>,
+}
+
+/// Lets something else build a derivation in place of the local builder.
+pub trait BuildHook: Send + Sync + std::fmt::Debug {
+    /// Either builds `drv` and registers its outputs in `store`, or asks for
+    /// a local build, which runs while the returned slot is held.
+    fn build(&self, store: &Store, drv_path: &StorePath, drv: &Derivation, opts: &BuildOptions) -> Result<HookOutcome>;
+}
+
+pub enum HookOutcome {
+    Built,
+    Local(Option<Box<dyn std::any::Any + Send>>),
 }
 
 impl Default for BuildOptions {
@@ -69,6 +83,7 @@ impl Default for BuildOptions {
             darwin_log_sandbox_violations: false,
             timeout: 0,
             max_silent_time: 0,
+            hook: None,
         }
     }
 }
@@ -249,12 +264,8 @@ impl Store {
         }
 
         if !needed.is_empty() {
-            if !self.can_build() {
-                return Err(format!(
-                    "cannot build in this store: its objects live in '{}' but paths name '{}'; pass --store DIR to use a store that can build",
-                    self.real.display(),
-                    self.dir.as_str()
-                ));
+            if !self.can_build() && opts.hook.is_none() {
+                return Err(self.cannot_build());
             }
             self.run_scheduler(&loaded, &needed, opts)?;
         }
@@ -266,6 +277,28 @@ impl Store {
             out.insert(p.clone(), m);
         }
         Ok(out)
+    }
+
+    fn cannot_build(&self) -> String {
+        format!(
+            "cannot build in this store: its objects live in '{}' but paths name '{}'; pass --store DIR to use a store that can build",
+            self.real.display(),
+            self.dir.as_str()
+        )
+    }
+
+    /// Builds a derivation that is held in memory and may have no `.drv`
+    /// file in this store (the daemon's `BuildDerivation`). Its inputs must
+    /// all be listed in `input_srcs` and be valid.
+    pub fn build_basic(&self, drv_path: &StorePath, drv: &Derivation, opts: &BuildOptions) -> Result<()> {
+        if !self.missing_outputs(drv) {
+            return Ok(());
+        }
+        if !self.can_build() && opts.hook.is_none() {
+            return Err(self.cannot_build());
+        }
+        eprintln!("building '{}'", self.dir.print(drv_path));
+        self.build_one(drv_path, drv, &HashMap::new(), opts)
     }
 
     fn run_scheduler(
@@ -371,6 +404,17 @@ impl Store {
             .collect::<Result<_>>()?;
         for (_, p) in &outputs {
             fsutil::remove_all(&self.real_path(p))?;
+        }
+
+        let _slot = match &opts.hook {
+            Some(h) if !drv.builder.starts_with("builtin:") => match h.build(self, drv_path, drv, opts)? {
+                HookOutcome::Built => return Ok(()),
+                HookOutcome::Local(slot) => slot,
+            },
+            _ => None,
+        };
+        if !self.can_build() {
+            return Err(self.cannot_build());
         }
 
         // The inputs' closure: what a sandboxed builder can see, and what
@@ -752,7 +796,7 @@ fn kill_group(pgid: libc::pid_t) {
     unsafe { libc::kill(-pgid, libc::SIGKILL) };
 }
 
-fn platform_compatible(want: &str, have: &str) -> bool {
+pub fn platform_compatible(want: &str, have: &str) -> bool {
     want == have || (have == "aarch64-darwin" && want == "x86_64-darwin") || (have == "x86_64-linux" && want == "i686-linux")
 }
 
