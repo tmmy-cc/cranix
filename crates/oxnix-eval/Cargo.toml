@@ -1,0 +1,12 @@
+[package]
+name = "oxnix-eval"
+description = "Parser, compiler and lazy evaluator for the Nix language"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oxnix-core.workspace = true
+oxnix-store.workspace = true
+regex.workspace = true
+serde_json.workspace = true
