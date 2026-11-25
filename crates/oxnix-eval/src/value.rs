@@ -1,6 +1,6 @@
 //! Runtime values, thunks, environments and interned symbols.
 
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
 use std::cell::{OnceCell, RefCell, UnsafeCell};
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
@@ -142,7 +142,7 @@ pub type Entry = (Sym, Value);
 /// Attribute set. Entries iterate sorted by key.
 ///
 /// `a // b` with a small `b` and a large `a` is stored as a layer over a
-/// shared `a`, so overlays on the package set do not copy it.
+/// shared `a`, so overlays on the package set share its entries.
 pub struct Attrs {
     repr: Repr,
     len: usize,
@@ -238,11 +238,24 @@ impl Attrs {
         self.len == 0
     }
 
-    /// All entries, sorted by key.
+    /// All entries, sorted by key. A layered set keeps the merged list it
+    /// builds here; its base layers keep only their own entries.
     pub fn entries(&self) -> &[Entry] {
         match &self.repr {
             Repr::Flat(v) => v,
-            Repr::Layered { base, top, flat, .. } => flat.get_or_init(|| merge(base.entries(), top)),
+            Repr::Layered { base, top, flat, .. } => flat.get_or_init(|| merge(&base.entries_uncached(), top)),
+        }
+    }
+
+    /// All entries, sorted by key, merging layers into a temporary list when
+    /// no merged list is cached yet.
+    pub fn entries_uncached(&self) -> Cow<'_, [Entry]> {
+        match &self.repr {
+            Repr::Flat(v) => Cow::Borrowed(v),
+            Repr::Layered { base, top, flat, .. } => match flat.get() {
+                Some(v) => Cow::Borrowed(v),
+                None => Cow::Owned(merge(&base.entries_uncached(), top)),
+            },
         }
     }
 
@@ -273,7 +286,7 @@ impl Attrs {
                 repr: Repr::Layered { base: a.clone(), top, depth: a.depth() + 1, flat: OnceCell::new() },
             });
         }
-        Rc::new(Attrs::from_sorted(merge(a.entries(), b.entries())))
+        Rc::new(Attrs::from_sorted(merge(&a.entries_uncached(), &b.entries_uncached())))
     }
 
     /// Builds a set from unsorted entries; later duplicates win.

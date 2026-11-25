@@ -901,9 +901,12 @@ impl Eval {
                 if x.len() != y.len() {
                     return Ok(false);
                 }
-                for ((k1, v1), (k2, v2)) in x.iter().zip(y.iter()) {
-                    if k1 != k2 || !self.eq(v1, v2)? {
-                        return Ok(false);
+                // Walk one side in key order and probe the other, so layered
+                // sets are compared without caching a merged copy.
+                for (k, v1) in x.entries_uncached().iter() {
+                    match y.get(k) {
+                        Some(v2) if self.eq(v1, v2)? => {}
+                        _ => return Ok(false),
                     }
                 }
                 true
