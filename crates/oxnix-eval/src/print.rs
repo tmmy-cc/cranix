@@ -165,13 +165,32 @@ pub fn json_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
+/// A float as nlohmann/json writes it, which Nix uses: the shortest
+/// digits that round-trip, in fixed notation for decimal exponents from
+/// -4 to 15 and in exponent notation otherwise; `null` if not finite.
 fn json_float(f: f64) -> String {
-    let s = format!("{f}");
-    if s.contains(['.', 'e', 'i', 'N']) {
-        s
-    } else {
-        format!("{s}.0")
+    if !f.is_finite() {
+        return "null".into();
     }
+    let sci = format!("{:e}", f.abs());
+    let (mant, exp) = sci.split_once('e').unwrap();
+    let digits: String = mant.chars().filter(char::is_ascii_digit).collect();
+    let k = digits.len() as i32;
+    // The value is 0.DIGITS × 10^n.
+    let n = exp.parse::<i32>().unwrap() + 1;
+    let sign = if f.is_sign_negative() { "-" } else { "" };
+    let body = if k <= n && n <= 15 {
+        format!("{digits}{}.0", "0".repeat((n - k) as usize))
+    } else if 0 < n && n <= 15 {
+        format!("{}.{}", &digits[..n as usize], &digits[n as usize..])
+    } else if -4 < n && n <= 0 {
+        format!("0.{}{digits}", "0".repeat((-n) as usize))
+    } else {
+        let m = if k == 1 { digits.clone() } else { format!("{}.{}", &digits[..1], &digits[1..]) };
+        let e = n - 1;
+        format!("{m}e{}{:02}", if e < 0 { '-' } else { '+' }, e.abs())
+    };
+    format!("{sign}{body}")
 }
 
 /// `builtins.toJSON`; path values are copied to the store.
@@ -263,5 +282,24 @@ mod tests {
         assert_eq!(fmt_float(1234567.0), "1.23457e+06");
         assert_eq!(fmt_float(0.0001), "0.0001");
         assert_eq!(fmt_float(0.00001), "1e-05");
+    }
+
+    #[test]
+    fn json_floats_like_nlohmann() {
+        use super::json_float;
+        assert_eq!(json_float(1000.0), "1000.0");
+        assert_eq!(json_float(-0.0), "-0.0");
+        assert_eq!(json_float(0.1), "0.1");
+        assert_eq!(json_float(3.14), "3.14");
+        assert_eq!(json_float(1e100), "1e+100");
+        assert_eq!(json_float(1e-7), "1e-07");
+        assert_eq!(json_float(1.5e-7), "1.5e-07");
+        assert_eq!(json_float(0.0001), "0.0001");
+        assert_eq!(json_float(123456789.0), "123456789.0");
+        assert_eq!(json_float(1e15), "1e+15");
+        assert_eq!(json_float(1e14), "100000000000000.0");
+        assert_eq!(json_float(1e16), "1e+16");
+        assert_eq!(json_float(f64::INFINITY), "null");
+        assert_eq!(json_float(f64::NAN), "null");
     }
 }
