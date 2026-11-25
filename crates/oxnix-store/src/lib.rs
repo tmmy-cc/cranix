@@ -6,6 +6,7 @@
 //! from where objects physically live, so a store rooted at e.g.
 //! `~/.local/share/oxnix` can still compute and hold `/nix/store` paths.
 
+pub mod binary_cache;
 pub mod build;
 pub mod config;
 mod fsutil;
