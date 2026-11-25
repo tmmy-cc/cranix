@@ -9,7 +9,7 @@ use std::rc::Rc;
 use oxnix_core::hash::{Encoding, Hash, HashAlgo, HashSink};
 use oxnix_core::{nar, FileIngestion, StorePath};
 use oxnix_eval::value::{Attrs, Sym};
-use oxnix_eval::{print, Eval, Options, Value};
+use oxnix_eval::{print, Eval, Options, RenderOptions, Value};
 use oxnix_store::build::{default_root, host_system, BuildOptions};
 use oxnix_store::Store;
 
@@ -41,6 +41,7 @@ global options:
   --arg NAME EXPR, --argstr NAME STRING   arguments for auto-called functions
   --system SYSTEM   value of builtins.currentSystem
   --pure            restrict impure builtins
+  --show-trace      show the full trace of evaluation errors
 ";
 
 struct Cli {
@@ -49,6 +50,7 @@ struct Cli {
     args: Vec<(String, ArgVal)>,
     system: String,
     pure: bool,
+    show_trace: bool,
     rest: Vec<String>,
 }
 
@@ -66,7 +68,7 @@ fn parse_search(s: &str) -> Option<(String, String)> {
 }
 
 fn parse_cli() -> Result<Cli, String> {
-    let mut cli = Cli { store: None, search: Vec::new(), args: Vec::new(), system: host_system(), pure: false, rest: Vec::new() };
+    let mut cli = Cli { store: None, search: Vec::new(), args: Vec::new(), system: host_system(), pure: false, show_trace: false, rest: Vec::new() };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().ok_or_else(|| format!("{name} requires an argument"));
@@ -88,6 +90,7 @@ fn parse_cli() -> Result<Cli, String> {
             }
             "--system" => cli.system = val("--system")?,
             "--pure" => cli.pure = true,
+            "--show-trace" => cli.show_trace = true,
             "-h" | "--help" => {
                 print!("{USAGE}");
                 std::process::exit(0);
@@ -173,6 +176,14 @@ fn new_eval(cli: &Cli) -> Result<Rc<Eval>, String> {
     Ok(Eval::new(store, Options { search_path: cli.search.clone(), system: cli.system.clone(), pure: cli.pure, trace_verbose: false }))
 }
 
+/// Renders an evaluation error for stderr, in colour when stderr is a
+/// terminal and `NO_COLOR` is unset.
+fn render_error(ev: &Eval, cli: &Cli, e: &oxnix_eval::EvalError) -> String {
+    use std::io::IsTerminal;
+    let color = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").map_or(true, |v| v.is_empty());
+    ev.render_error(e, &RenderOptions { show_trace: cli.show_trace, color })
+}
+
 fn cwd() -> String {
     std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "/".into())
 }
@@ -250,7 +261,7 @@ fn cmd_eval(cli: &Cli, args: &[String]) -> Result<(), String> {
             println!("{s}");
             Ok(())
         }
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(render_error(&ev, cli, &e)),
     }
 }
 
@@ -292,7 +303,7 @@ fn cmd_instantiate(cli: &Cli, args: &[String], build: bool) -> Result<(), String
     let ev = new_eval(cli)?;
     let mut drvs = Vec::new();
     let r = eval_target(&ev, cli, &t).and_then(|v| collect_drvs(&ev, &v, &mut drvs));
-    r.map_err(|e| e.to_string())?;
+    r.map_err(|e| render_error(&ev, cli, &e))?;
     if !build {
         for (d, _) in &drvs {
             println!("{}", ev.store.dir.print(d));
