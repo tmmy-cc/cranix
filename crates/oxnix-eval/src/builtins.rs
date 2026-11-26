@@ -629,7 +629,10 @@ pub static PRIMOPS: &[PrimOp] = &[
         let s = ev.coerce_to_string(&a[0], &CoerceOpts { more: true, copy: false }, &mut ctx)?;
         Ok(Value::str_ctx(s, ctx))
     }),
-    prim!("toXML", 1, |_, _| err("builtins.toXML is not supported")),
+    prim!("toXML", 1, |ev, a| {
+        let (s, ctx) = crate::xml::to_xml(ev, &a[0])?;
+        Ok(Value::str_ctx(s, ctx))
+    }),
     prim!("trace", 2, |ev, a| {
         let v = ev.force(&a[0])?;
         match &v {

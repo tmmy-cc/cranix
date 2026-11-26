@@ -259,3 +259,19 @@ builtins.fromTOML "a = 01"
 builtins.fromTOML "a = -0xff"
 #---
 builtins.fromTOML "a = \"\\x41\""
+#---
+builtins.toXML [ 1 (-2) 1.5 0.1 1.0e20 0.000001 123456789.0 "s<>&\"'\n\r\tx" true false null /tmp/x [] {} ]
+#---
+builtins.toXML { b = 1; a = { c = [ 2 ]; }; "q\"" = 3; f = let x = 1; in x; g = builtins.map (x: x) [ 1 ]; }
+#---
+builtins.toXML [ (x: x) ({ a, b ? 1, ... }: a) ({ z, a }@args: a) ({ z, a, ... }@args: a) builtins.map (builtins.map (x: x)) { __toString = s: "x"; } ]
+#---
+builtins.toXML { a = derivation { name = "x"; system = "x86_64-linux"; builder = "/bin/sh"; }; b = derivation { name = "x"; system = "x86_64-linux"; builder = "/bin/sh"; }; }
+#---
+builtins.toXML [ { type = "derivation"; } { type = "derivation"; drvPath = "/nix/store/x.drv"; outPath = "/nix/store/x"; z = 1; } { type = "derivation"; drvPath = 1; outPath = "/x"; } { outPath = "/x"; } ]
+#---
+builtins.getContext (builtins.toXML (derivation { name = "x"; system = "x86_64-linux"; builder = "/bin/sh"; }))
+#---
+builtins.getContext (builtins.toXML [ "${derivation { name = "x"; system = "x86_64-linux"; builder = "/bin/sh"; }}" ])
+#---
+builtins.toXML [ (throw "x") ]
