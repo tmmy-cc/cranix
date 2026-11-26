@@ -697,6 +697,16 @@ h3 {
     font-weight: 700;
 }
 
+.ipa {
+    font-family: "Charis SIL", "Doulos SIL", "Gentium Plus", "Times New Roman", serif;
+    font-weight: 400;
+    white-space: nowrap;
+}
+
+.name-card h3 .ipa {
+    color: var(--color-muted);
+}
+
 .name-card p {
     margin: 0;
     color: var(--color-muted);
