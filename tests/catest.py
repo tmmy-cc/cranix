@@ -5,7 +5,9 @@ Checks that drvPaths, `show-derivation` and the output paths and
 realisations of a build match `nix build` in a scratch store at the same
 location, that changing a CA dependency without changing its output reuses
 the realisation of its dependent (with the same build and resolution
-messages as Nix), and that impure derivations rebuild.
+messages as Nix), that impure derivations rebuild, and that real Nix gets
+the same paths, realisations and messages when it builds through
+`cranix daemon`.
 Needs Nix 2.24; nothing outside a temporary directory is changed.
 """
 
@@ -17,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 here = os.path.dirname(os.path.abspath(__file__))
 cranix = os.environ.get("CRANIX", os.path.join(here, "..", "target", "debug", "cranix"))
@@ -40,7 +43,7 @@ def progress(stderr):
     out = []
     for line in stderr.splitlines():
         if line.startswith("building '") or line.startswith("resolved derivation: "):
-            out.append(re.sub(r"(\.\.\.| \(\d+/\d+\))$", "", line))
+            out.append(re.sub(r"(\.\.\.| \(\d+/\d+\))+$", "", line))
     return sorted(out)
 
 
@@ -115,6 +118,30 @@ def main():
         # Impure derivations build anew every time.
         impure = [run(ox + ["--store", store, "build", os.path.join(here, "ca.nix"), "-A", "i", "--no-link"] + args, ox_env) for _ in range(2)]
         check("impure rebuilds", True, impure[0] != impure[1])
+
+        # Through the daemon: real Nix builds in a cranix daemon's store at
+        # the same location and gets the same paths and realisations.
+        rmtree(store)
+        os.remove(log)
+        sock = os.path.join(tmp, "daemon.sock")
+        daemon = subprocess.Popen(ox + ["--store", store, "daemon", "--socket", sock], env=ox_env, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(500):
+                if os.path.exists(sock):
+                    break
+                time.sleep(0.01)
+            uri = f"unix://{sock}?store={store}/store"
+            via = ["nix", "build", "--no-link", "--print-out-paths", "--store", uri, "-f", os.path.join(here, "ca.nix")] + args
+            got_paths, got_msgs = run(via + built, nix_env, stderr=True)
+            check("output paths through the daemon", sorted(set(want_paths)), sorted(set(got_paths.split("\n"))))
+            got_real = json.loads(run(["nix"] + info + ["--store", uri, "-f", os.path.join(here, "ca.nix")] + args + ["b", "c", "text"], nix_env))
+            check("realisations through the daemon", sorted(want_real, key=lambda r: r["id"]), sorted(got_real, key=lambda r: r["id"]))
+            _, got_msgs = run(via + ["--log-format", "raw", "--argstr", "salt", "1", "c"], nix_env, stderr=True)
+            check("messages through the daemon", progress(want_msgs), progress(got_msgs))
+            check("builds of b through the daemon", 1, open(log).read().count("b"))
+        finally:
+            daemon.kill()
+            daemon.wait()
     finally:
         rmtree(tmp)
     print(f"failed {len(failures)}")
