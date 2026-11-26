@@ -7,12 +7,13 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::Write;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cranix_core::signing::{PublicKey, SecretKey};
 use cranix_core::{NarInfo, StorePath};
 
 use crate::binary_cache::BinaryCache;
+use crate::build::{log_message, BuildLogger};
 use crate::settings::Settings;
 use crate::http::HttpClient;
 use crate::narinfo_cache::{self, NarinfoCache};
@@ -220,6 +221,11 @@ impl Store {
     /// missing, in parallel. Returns the requested paths that are still
     /// invalid afterwards.
     pub fn substitute_paths(&self, paths: &[StorePath]) -> Result<BTreeSet<StorePath>> {
+        self.substitute_paths_logged(paths, None)
+    }
+
+    /// [`Store::substitute_paths`], reporting progress to `logger`.
+    pub fn substitute_paths_logged(&self, paths: &[StorePath], logger: Option<&Arc<dyn BuildLogger>>) -> Result<BTreeSet<StorePath>> {
         let requested: Vec<StorePath> = paths.iter().filter(|p| !self.is_valid(p)).cloned().collect();
         if requested.is_empty() || self.subst.is_empty() {
             return Ok(requested.into_iter().collect());
@@ -257,10 +263,10 @@ impl Store {
         let fetched = Mutex::new(Vec::new());
         parallel(&items, self.subst.jobs, |(p, (i, ni))| {
             let cache = &self.subst.caches[*i];
-            eprintln!("copying path '{}' from '{}'...", self.dir.print(p), cache.url);
+            log_message(logger, &format!("copying path '{}' from '{}'...", self.dir.print(p), cache.url));
             match self.fetch_one(cache, ni) {
                 Ok(()) => fetched.lock().unwrap().push((*p).clone()),
-                Err(e) => eprintln!("error: {e}"),
+                Err(e) => log_message(logger, &format!("error: {e}")),
             }
         });
 
@@ -310,7 +316,12 @@ impl Store {
 
     /// Makes `p` valid, substituting it if needed.
     pub fn ensure_path(&self, p: &StorePath) -> Result<()> {
-        if self.is_valid(p) || self.substitute_paths(std::slice::from_ref(p))?.is_empty() {
+        self.ensure_path_logged(p, None)
+    }
+
+    /// [`Store::ensure_path`], reporting progress to `logger`.
+    pub fn ensure_path_logged(&self, p: &StorePath, logger: Option<&Arc<dyn BuildLogger>>) -> Result<()> {
+        if self.is_valid(p) || self.substitute_paths_logged(std::slice::from_ref(p), logger)?.is_empty() {
             Ok(())
         } else {
             Err(format!("path '{}' does not exist and cannot be created", self.dir.print(p)))

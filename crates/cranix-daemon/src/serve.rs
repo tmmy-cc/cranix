@@ -541,6 +541,9 @@ impl cranix_store::build::BuildLogger for StderrLogger {
         eprintln!("{line}");
     }
     fn stop(&self, _id: u64) {}
+    fn message(&self, text: &str) {
+        eprintln!("{text}");
+    }
 }
 
 fn serve_build_options(opts: &BuildOptions, keep_failed: bool) -> BuildOptions {

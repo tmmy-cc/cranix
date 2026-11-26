@@ -58,11 +58,21 @@ pub struct BuildOptions {
 }
 
 /// Receives the activity of builds: one `start`, the builder's output
-/// lines, and one `stop` per build.
+/// lines, and one `stop` per build, and the messages of realisation
+/// outside any one build (substitutions, resolved derivations).
 pub trait BuildLogger: Send + Sync + std::fmt::Debug {
     fn start(&self, id: u64, drv_path: &str, text: &str);
     fn line(&self, id: u64, line: &str);
     fn stop(&self, id: u64);
+    fn message(&self, text: &str);
+}
+
+/// Sends `text` to `logger`, or to stderr without one.
+pub fn log_message(logger: Option<&Arc<dyn BuildLogger>>, text: &str) {
+    match logger {
+        Some(l) => l.message(text),
+        None => eprintln!("{text}"),
+    }
 }
 
 /// Where the output of one build goes: the configured logger, or stderr
@@ -164,6 +174,11 @@ fn parse_num<T: std::str::FromStr>(name: &str, v: &str) -> Result<T> {
 }
 
 impl BuildOptions {
+    /// A message about realisation, sent where build output goes.
+    pub fn message(&self, text: &str) {
+        log_message(self.logger.as_ref(), text)
+    }
+
     /// Applies the Nix setting `name` (`--option NAME VALUE`, `NIX_CONFIG`).
     /// List settings also accept an `extra-` prefix, which appends. Returns
     /// `Ok(false)` for settings the builder does not use.
@@ -334,7 +349,7 @@ impl Store {
                 break needed;
             }
             let all: Vec<StorePath> = fetch.values().flatten().cloned().collect();
-            let failed = self.substitute_paths(&all)?;
+            let failed = self.substitute_paths_logged(&all, opts.logger.as_ref())?;
             if failed.is_empty() {
                 break needed;
             }
@@ -568,7 +583,7 @@ impl Store {
 
         if let Some(b) = drv.builder.strip_prefix("builtin:") {
             match b {
-                "fetchurl" => self.builtin_fetchurl(drv, &outputs[0].1)?,
+                "fetchurl" => self.builtin_fetchurl(drv, &outputs[0].1, &log)?,
                 _ => return Err(format!("unsupported builtin builder '{}'", drv.builder)),
             }
         } else {
@@ -859,14 +874,14 @@ impl Store {
         sb.collect_outputs(self, outputs)
     }
 
-    fn builtin_fetchurl(&self, drv: &Derivation, out: &StorePath) -> Result<()> {
+    fn builtin_fetchurl(&self, drv: &Derivation, out: &StorePath, log: &BuildLog) -> Result<()> {
         let url = drv.env.get("url").ok_or("builtin:fetchurl requires 'url'")?;
         let real = self.real_path(out);
         // With `unpack`, the download is a (possibly compressed) NAR that is
         // restored as the output.
         let unpack = drv.env.get("unpack").is_some_and(|v| v == "1");
         let dest = if unpack { real.with_extension("download") } else { real.clone() };
-        eprintln!("downloading '{url}'");
+        log.info(&format!("downloading '{url}'"));
         let st = Command::new("curl")
             .args(["--fail", "--location", "--silent", "--show-error", "--output"])
             .arg(&dest)

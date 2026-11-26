@@ -1002,6 +1002,13 @@ impl cranix_store::build::BuildLogger for ClientLogger {
         })
     }
 
+    fn message(&self, text: &str) {
+        self.send(|w| {
+            w.write_u64(proto::STDERR_NEXT)?;
+            w.write_str(&format!("{text}\n"))
+        });
+    }
+
     fn stop(&self, id: u64) {
         if self.activities() {
             self.send(|w| {

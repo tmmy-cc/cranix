@@ -84,7 +84,7 @@ impl Store {
         let resolved = drv.resolve(&self.dir, &input_paths)?;
         let text = resolved.to_aterm(&self.dir);
         let resolved_path = self.add_text(&format!("{}.drv", drv.name), text.as_bytes(), &resolved.references())?;
-        eprintln!("resolved derivation: '{}' -> '{}'", self.dir.print(drv_path), self.dir.print(&resolved_path));
+        opts.message(&format!("resolved derivation: '{}' -> '{}'", self.dir.print(drv_path), self.dir.print(&resolved_path)));
         let outputs = if self.missing_outputs(&resolved)? {
             self.build_derivation(&resolved_path, &resolved, all, opts, progress)?
         } else {
