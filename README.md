@@ -200,6 +200,10 @@ flakes, `fetchGit`/`fetchTarball`/`fetchTree`, content-addressed
   fixed-output derivation can, that `__noChroot` needs relaxed mode, and
   that `timeout` and `max-silent-time` kill a build with its background
   processes. On Linux these need unprivileged user namespaces.
+* `tests/sandbox-linux.sh [SYSTEM...]` builds oxnix with nixpkgs and runs
+  those checks inside a Nix build, as the unprivileged build user, for
+  `aarch64-linux` and `x86_64-linux` on this machine or its remote builders.
+  Systems without a builder are skipped.
 
 ## Profiling
 
