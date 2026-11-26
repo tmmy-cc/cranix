@@ -8,7 +8,7 @@ use oxnix_store::Store;
 fn eval() -> Rc<Eval> {
     let root = std::env::temp_dir().join(format!("oxnix-error-tests-{}", std::process::id()));
     let store = Store::open_at(&root).expect("opening a temporary store");
-    let opts = Options { search_path: Vec::new(), system: "x86_64-linux".into(), pure: true, trace_verbose: false };
+    let opts = Options { search_path: Vec::new(), system: "x86_64-linux".into(), pure: true, trace_verbose: false, experimental_features: Default::default() };
     Eval::new(store, opts)
 }
 
