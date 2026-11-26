@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+    <style>
+        .ink { fill: #17181a; stroke: #17181a; }
+        .grey { fill: #8c9096; }
+        .stripe { stroke: #ffffff; }
+        @media (prefers-color-scheme: dark) {
+            .ink { fill: #eeece6; stroke: #eeece6; }
+            .grey { fill: #a7abb1; }
+            .stripe { stroke: #121315; }
+        }
+    </style>
+    <g fill="none" stroke-linecap="round">
+        <path class="ink" d="M25 37V58M29.5 37l3.5 21M19 59.5h18" stroke-width="3"/>
+    </g>
+    <path class="grey" d="M10 35c4-8 14-11 24-11l5 4c-5 6-13 10-21 10z"/>
+    <path class="ink" d="M7 43c1-7 5-11 11-12 1 5-3 10-11 12z"/>
+    <path class="ink" d="M35.5 27 45 11.5" fill="none" stroke-width="5" stroke-linecap="round"/>
+    <path class="stripe" d="M37.2 27.4 46.2 12.6" fill="none" stroke-width="1.6" stroke-linecap="round"/>
+    <circle class="ink" cx="45.5" cy="10" r="3.8"/>
+    <circle cx="44.6" cy="6.9" r="1.8" fill="#d1242f"/>
+    <circle cx="46.8" cy="9.5" r="1" fill="#f2b705"/>
+    <path class="ink" d="M48.6 8.4 61.5 10.8 48.7 12z"/>
+    <path class="ink" d="M58.5 11v9.5" fill="none" stroke-width="1.2"/>
+    <path d="M58.5 20.5 62.5 22.8 58.5 25.1 54.5 22.8z" fill="#f6cf4a"/>
+    <path d="M54.5 22.8 58.5 25.1V29.8L54.5 27.5z" fill="#e2a90a"/>
+    <path d="M62.5 22.8 58.5 25.1V29.8L62.5 27.5z" fill="#b98608"/>
+</svg>
