@@ -7,6 +7,7 @@ pub mod derivation;
 pub mod error;
 pub mod eval;
 pub mod fetch;
+pub mod flake;
 pub mod parser;
 pub mod print;
 pub mod toml;

@@ -230,6 +230,7 @@ pub static PRIMOPS: &[PrimOp] = &[
         }
     }),
     prim!("fetchGit", 1, crate::fetch::prim_fetch_git),
+    prim!("flakeRefToString", 1, crate::flake::prim_flake_ref_to_string),
     prim!("fetchMercurial", 1, |_, _| err("builtins.fetchMercurial is not supported")),
     prim!("fetchTarball", 1, crate::fetch::prim_fetch_tarball),
     prim!("fetchTree", 1, crate::fetch::prim_fetch_tree),
@@ -284,6 +285,7 @@ pub static PRIMOPS: &[PrimOp] = &[
         Ok(Value::list((0..n).map(|i| Value::app_thunk(f.clone(), Value::Int(i))).collect()))
     }),
     prim!("genericClosure", 1, generic_closure),
+    prim!("getFlake", 1, crate::flake::prim_get_flake),
     prim!("getAttr", 2, |ev, a| {
         let k = ev.force_plain_str(&a[0])?;
         match ev.force_attrs(&a[1])?.get_str(&k) {
@@ -415,6 +417,7 @@ pub static PRIMOPS: &[PrimOp] = &[
             )),
         }
     }),
+    prim!("parseFlakeRef", 1, crate::flake::prim_parse_flake_ref),
     prim!("parseDrvName", 1, |ev, a| {
         let s = ev.force_plain_str(&a[0])?;
         let b = s.as_bytes();
