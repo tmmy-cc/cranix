@@ -58,6 +58,19 @@ impl Store {
         d.outputs.values().any(|o| o.path.as_ref().map_or(true, |p| !self.is_valid(p)))
     }
 
+    /// The invalid output paths of `d`; `None` if an output's path is only
+    /// known after building it.
+    fn missing_output_paths(&self, d: &Derivation) -> Option<Vec<StorePath>> {
+        let mut v = Vec::new();
+        for o in d.outputs.values() {
+            let p = o.path.as_ref()?;
+            if !self.is_valid(p) {
+                v.push(p.clone());
+            }
+        }
+        Some(v)
+    }
+
     /// Builds `drvs` and everything they need. Returns each derivation's
     /// output paths.
     pub fn realise(
@@ -66,19 +79,70 @@ impl Store {
         opts: &BuildOptions,
     ) -> Result<BTreeMap<StorePath, BTreeMap<String, StorePath>>> {
         // Discover the subgraph of derivations that have missing outputs.
+        // Derivations whose outputs can all be substituted are fetched
+        // instead, together with their closures, and their inputs are not
+        // needed; those whose substitution fails are built after all.
         let mut loaded: HashMap<StorePath, Derivation> = HashMap::new();
-        let mut needed: BTreeSet<StorePath> = BTreeSet::new();
-        let mut todo: Vec<StorePath> = drvs.to_vec();
-        while let Some(p) = todo.pop() {
-            if loaded.contains_key(&p) {
-                continue;
+        let mut no_subst: BTreeSet<StorePath> = BTreeSet::new();
+        let needed = loop {
+            let mut needed: BTreeSet<StorePath> = BTreeSet::new();
+            let mut fetch: BTreeMap<StorePath, Vec<StorePath>> = BTreeMap::new();
+            let mut seen: BTreeSet<StorePath> = BTreeSet::new();
+            let mut frontier: Vec<StorePath> = drvs.to_vec();
+            while !frontier.is_empty() {
+                let mut missing = Vec::new();
+                for p in &frontier {
+                    if !loaded.contains_key(p) {
+                        loaded.insert(p.clone(), self.read_derivation(p)?);
+                    }
+                    if !no_subst.contains(p) {
+                        missing.extend(self.missing_output_paths(&loaded[p]).into_iter().flatten());
+                    }
+                }
+                self.query_substitutable(&missing);
+                let mut next = Vec::new();
+                for p in frontier {
+                    if !seen.insert(p.clone()) {
+                        continue;
+                    }
+                    let d = &loaded[&p];
+                    if !self.missing_outputs(d) {
+                        continue;
+                    }
+                    match self.missing_output_paths(d) {
+                        Some(outs) if !no_subst.contains(&p) && self.substitutable(&outs) => {
+                            fetch.insert(p, outs);
+                        }
+                        _ => {
+                            next.extend(d.input_drvs.keys().filter(|i| !seen.contains(*i)).cloned());
+                            needed.insert(p);
+                        }
+                    }
+                }
+                frontier = next;
             }
-            let d = self.read_derivation(&p)?;
-            if self.missing_outputs(&d) {
-                needed.insert(p.clone());
-                todo.extend(d.input_drvs.keys().cloned());
+            if fetch.is_empty() {
+                break needed;
             }
-            loaded.insert(p, d);
+            let all: Vec<StorePath> = fetch.values().flatten().cloned().collect();
+            let failed = self.substitute_paths(&all)?;
+            if failed.is_empty() {
+                break needed;
+            }
+            for (drv, outs) in fetch {
+                if outs.iter().any(|o| failed.contains(o)) {
+                    no_subst.insert(drv);
+                }
+            }
+        };
+
+        if !needed.is_empty() {
+            // Sources the builds need may be in a cache too.
+            let srcs: Vec<StorePath> =
+                needed.iter().flat_map(|p| loaded[p].input_srcs.iter()).filter(|s| !self.is_valid(s)).cloned().collect();
+            if !srcs.is_empty() {
+                self.substitute_paths(&srcs)?;
+            }
         }
 
         if !needed.is_empty() {
