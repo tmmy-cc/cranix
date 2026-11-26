@@ -118,7 +118,7 @@ def fetcher_tests(tmp):
     expr = os.path.join(tmp, "fetch.nix")
     with open(expr, "w") as f:
         f.write(f"""
-let r = {repo}; t = "file://{tmp}/t.tar.gz"; f = x: x // {{ o = x.outPath; }}; in {{
+let r = {repo}; t = "file://{tmp}/t.tar.gz"; f = x: builtins.removeAttrs x [ "outPath" ] // {{ o = x.outPath; }}; in {{
   gitWorkdir = f (builtins.fetchGit r);
   gitRef = f (builtins.fetchGit {{ url = r; ref = "main"; }});
   gitRev = f (builtins.fetchGit {{ url = r; rev = (builtins.fetchGit r).rev; ref = "main"; name = "named"; }});
@@ -139,7 +139,7 @@ let r = {repo}; t = "file://{tmp}/t.tar.gz"; f = x: x // {{ o = x.outPath; }}; i
     dirty = os.path.join(tmp, "dirty.nix")
     with open(dirty, "w") as f:
         f.write(f"""
-let r = {repo}; f = x: x // {{ o = x.outPath; }}; in {{
+let r = {repo}; f = x: builtins.removeAttrs x [ "outPath" ] // {{ o = x.outPath; }}; in {{
   dirty = f (builtins.fetchGit r);
   dirtyTree = f (builtins.fetchTree {{ type = "git"; url = "file://${{toString r}}"; }});
 }}
@@ -299,11 +299,18 @@ def network_tests(tmp):
     expr = os.path.join(tmp, "net.nix")
     with open(expr, "w") as f:
         f.write(f"""
-let f = x: x // {{ o = x.outPath; }}; in {{
+let f = x: builtins.removeAttrs x [ "outPath" ] // {{ o = x.outPath; }}; in {{
   remote = f (builtins.fetchGit {{ url = "https://github.com/NixOS/flake-registry"; rev = "{rev}"; }});
   shallow = f (builtins.fetchTree {{ type = "git"; url = "https://github.com/NixOS/flake-registry"; ref = "master"; rev = "{rev}"; }});
   github = f (builtins.fetchTree "github:NixOS/flake-registry/{rev}");
   archive = builtins.fetchTarball "https://github.com/NixOS/flake-registry/archive/{rev}.tar.gz";
+  githubRef = f (builtins.fetchTree {{ type = "github"; owner = "NixOS"; repo = "flake-registry"; ref = "master"; }});
+  gitlab = f (builtins.fetchTree "gitlab:pages/plain-html");
+  gitlabRev = f (builtins.fetchTree {{ type = "gitlab"; owner = "pages"; repo = "plain-html"; rev = (builtins.fetchTree "gitlab:pages/plain-html").rev; }});
+  sourcehut = f (builtins.fetchTree "sourcehut:~sircmpwn/scdoc");
+  tarball = f (builtins.fetchTree "https://github.com/NixOS/flake-registry/archive/{rev}.tar.gz");
+  lockable = f (builtins.fetchTree "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.zst");
+  remoteHead = f (builtins.fetchGit "https://github.com/NixOS/flake-registry");
 }}
 """)
     compare_eval("network", expr, tmp)
@@ -314,6 +321,9 @@ let f = x: x // {{ o = x.outPath; }}; in {{
   inputs.other.url = "github:numtide/flake-utils";
   inputs.other.inputs.systems.follows = "utils/systems";
   inputs.reg = { url = "github:NixOS/flake-registry/%s"; flake = false; };
+  inputs.gl = { url = "gitlab:pages/plain-html"; flake = false; };
+  inputs.tb = { url = "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.zst"; flake = false; };
+  inputs.gitHead = { url = "git+https://github.com/NixOS/flake-registry"; flake = false; };
   outputs = { self, ... }: { };
 }
 """ % rev)
