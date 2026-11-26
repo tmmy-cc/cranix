@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::Duration;
 
+use crate::binary_cache::redact_url;
 use crate::Result;
 
 #[derive(Clone, Debug)]
@@ -139,11 +140,12 @@ impl HttpClient {
             if !is_transient(resp.status) {
                 return Ok(resp);
             }
-            let why = if resp.status == 0 { err } else { format!("HTTP status {}", resp.status) };
+            // curl may quote the URL in its own message.
+            let why = if resp.status == 0 { err.replace(url, &redact_url(url)) } else { format!("HTTP status {}", resp.status) };
             if attempt == self.attempts {
-                return Err(format!("{what} '{url}': {why}"));
+                return Err(format!("{what} '{}': {why}", redact_url(url)));
             }
-            eprintln!("warning: {what} '{url}': {why}; retrying in {} ms", delay.as_millis());
+            eprintln!("warning: {what} '{}': {why}; retrying in {} ms", redact_url(url), delay.as_millis());
             std::thread::sleep(delay);
             delay *= 2;
         }
@@ -166,7 +168,7 @@ impl HttpClient {
         let resp = self.run("uploading to", &["--upload-file", src, "--header", &ct, "--output", "/dev/null"], url)?;
         match resp.status {
             200..=299 => Ok(()),
-            s => Err(format!("uploading to '{url}': HTTP status {s}")),
+            s => Err(format!("uploading to '{}': HTTP status {s}", redact_url(url))),
         }
     }
 
@@ -200,7 +202,7 @@ impl Read for Download {
             }
             let st = self.child.wait()?;
             if !st.success() {
-                return Err(io::Error::other(format!("downloading '{}': {}", self.url, msg.trim())));
+                return Err(io::Error::other(format!("downloading '{}': {}", redact_url(&self.url), msg.trim().replace(&self.url, &redact_url(&self.url)))));
             }
         }
         Ok(n)

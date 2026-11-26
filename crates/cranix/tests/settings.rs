@@ -114,3 +114,41 @@ fn unknown_settings_warn_once() {
     assert_eq!(err.matches("warning: unknown setting 'extra-timeout'").count(), 1, "{err}");
     assert!(!err.contains("auto-optimise-store") && !err.contains("trusted-substituters"), "{err}");
 }
+
+const TOKEN: &str = "glpat-TESTTOKEN0123456789";
+const PASSWORD: &str = "TESTPASSWORD42";
+const QUERY_TOKEN: &str = "TESTQUERYTOKEN42";
+
+#[test]
+fn secrets_in_substituter_urls_stay_hidden() {
+    let e = Env::new("secrets");
+    // Port 9 refuses connections, so every lookup fails with a message
+    // that names its substituter.
+    let conf = format!(
+        "substituters = http://127.0.0.1:9/{TOKEN}/?priority=10&trusted=true https://user:{PASSWORD}@127.0.0.1:9/c http://127.0.0.1:9/q?token={QUERY_TOKEN}&priority=5\n\
+         download-attempts = 1\naccess-tokens = github.com={QUERY_TOKEN}"
+    );
+    let env = [("NIX_CONFIG", conf.as_str())];
+    let store = e.dir.join("store");
+    let drv = format!(
+        "derivation {{ name = \"x\"; system = \"{}-{}\"; builder = \"/bin/sh\"; args = [ \"-c\" \"echo x > $out\" ]; }}",
+        std::env::consts::ARCH,
+        if cfg!(target_os = "macos") { "darwin" } else { "linux" }
+    );
+    let (out, err) = e.run(&env, &["--store", store.to_str().unwrap(), "build", "--no-link", "--expr", &drv]);
+    assert!(err.contains("ignoring substituter"), "{err}");
+    let (shown, _) = e.run(&env, &["config", "show"]);
+    for text in [&out, &err, &shown] {
+        for secret in [TOKEN, PASSWORD, QUERY_TOKEN] {
+            assert!(!text.contains(secret), "'{secret}' printed:\n{text}");
+        }
+    }
+    assert!(err.contains("http://127.0.0.1:9/<redacted>"), "{err}");
+    assert!(shown.contains("http://127.0.0.1:9/<redacted>/?priority=10&trusted=true"), "{shown}");
+    assert!(shown.contains("https://user:***@127.0.0.1:9/c"), "{shown}");
+    assert!(shown.contains("token=<redacted>&priority=5"), "{shown}");
+    assert!(shown.contains("access-tokens = github.com=<redacted>"), "{shown}");
+
+    let (real, _) = e.run(&env, &["config", "show", "--show-secrets", "substituters"]);
+    assert!(real.contains(TOKEN) && real.contains(PASSWORD) && real.contains(QUERY_TOKEN), "{real}");
+}

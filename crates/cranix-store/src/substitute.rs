@@ -150,11 +150,11 @@ impl Store {
                     Ok(info) if info.store_dir == self.dir.as_str() => v.push((info.priority, i)),
                     Ok(info) => eprintln!(
                         "warning: ignoring substituter '{}': it holds paths of '{}', not '{}'",
-                        c.url,
+                        c.shown(),
                         info.store_dir,
                         self.dir.as_str()
                     ),
-                    Err(e) => eprintln!("warning: ignoring substituter '{}': {e}", c.url),
+                    Err(e) => eprintln!("warning: ignoring substituter '{}': {e}", c.shown()),
                 }
             }
             v.sort();
@@ -172,12 +172,12 @@ impl Store {
             let c = &self.subst.caches[i];
             match c.query_narinfo(&self.dir, p.hash_part()) {
                 Ok(Some(ni)) if ni.path != *p => {
-                    eprintln!("warning: substituter '{}' returned the narinfo of '{}' for '{p}'", c.url, ni.path)
+                    eprintln!("warning: substituter '{}' returned the narinfo of '{}' for '{p}'", c.shown(), ni.path)
                 }
                 Ok(Some(ni)) if self.subst.require_sigs && !ni.is_trusted(&self.dir, &self.subst.keys) => eprintln!(
                     "warning: ignoring substitute for '{}' from '{}', as it's not signed by any of the keys in 'trusted-public-keys'",
                     self.dir.print(p),
-                    c.url
+                    c.shown()
                 ),
                 Ok(Some(ni)) => {
                     found = Some((i, ni));
@@ -266,10 +266,10 @@ impl Store {
             for &i in self.cache_order() {
                 let c = &self.subst.caches[i];
                 match c.query_realisation(&id) {
-                    Ok(Some(r)) if r.id != id => log_message(logger, &format!("warning: substituter '{}' returned realisation '{}' for '{id}'", c.url, r.id)),
+                    Ok(Some(r)) if r.id != id => log_message(logger, &format!("warning: substituter '{}' returned realisation '{}' for '{id}'", c.shown(), r.id)),
                     Ok(Some(r)) if self.subst.require_sigs && !r.is_signed_by(&self.subst.keys) => log_message(
                         logger,
-                        &format!("warning: ignoring realisation '{id}' from '{}', as it's not signed by any of the keys in 'trusted-public-keys'", c.url),
+                        &format!("warning: ignoring realisation '{id}' from '{}', as it's not signed by any of the keys in 'trusted-public-keys'", c.shown()),
                     ),
                     Ok(Some(r)) => {
                         found = Some(r);
@@ -341,7 +341,7 @@ impl Store {
         let fetched = Mutex::new(Vec::new());
         parallel(&items, self.subst.jobs, |(p, (i, ni))| {
             let cache = &self.subst.caches[*i];
-            log_message(logger, &format!("copying path '{}' from '{}'...", self.dir.print(p), cache.url));
+            log_message(logger, &format!("copying path '{}' from '{}'...", self.dir.print(p), cache.shown()));
             match self.fetch_one(cache, ni) {
                 Ok(()) => fetched.lock().unwrap().push((*p).clone()),
                 Err(e) => log_message(logger, &format!("error: {e}")),

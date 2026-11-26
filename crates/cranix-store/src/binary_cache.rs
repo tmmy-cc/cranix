@@ -169,6 +169,98 @@ pub struct CacheInfo {
     pub want_mass_query: bool,
 }
 
+/// Prefixes of access tokens issued by GitLab and GitHub.
+const TOKEN_PREFIXES: &[&str] = &["glpat-", "glptt-", "gldt-", "ghp_", "gho_", "ghs_", "ghu_", "github_pat_"];
+
+/// Whether a URL path segment looks like a secret: a known token prefix,
+/// or 20 or more characters of `[A-Za-z0-9_.-]` holding a run of 16 or more
+/// letters and digits with a digit among them (random strings, unlike
+/// names made of words), that are not a store path hash, a NAR file name
+/// or a narinfo name.
+fn looks_like_token(seg: &str) -> bool {
+    if TOKEN_PREFIXES.iter().any(|p| seg.starts_with(p)) {
+        return true;
+    }
+    let charset = seg.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+    let random_run = seg.split(|c: char| !c.is_ascii_alphanumeric()).any(|r| r.len() >= 16 && r.chars().any(|c| c.is_ascii_digit()));
+    if seg.len() < 20 || !charset || !random_run {
+        return false;
+    }
+    // `<hash>`, `<hash>-name`, `<hash>.narinfo`, `<filehash>.nar.xz`.
+    let head = seg.split(['.', '-']).next().unwrap_or("");
+    let nix32 = |s: &str| s.bytes().all(|c| cranix_core::base32::ALPHABET.contains(&c));
+    !((head.len() == 32 || head.len() == 52) && nix32(head))
+}
+
+/// Whether a query parameter's value is a secret, judged by its name.
+fn secret_param(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    ["token", "key", "secret", "password", "passwd", "auth", "credential"].iter().any(|w| k.contains(w))
+}
+
+/// `url` with its secrets hidden, for messages: the password of the user
+/// information becomes `***`, path segments that look like access tokens
+/// become `<redacted>`, and so do the values of query parameters named like
+/// tokens, keys, secrets, passwords or authentication. The scheme, host,
+/// port and the other parameters stay as they are.
+pub fn redact_url(url: &str) -> String {
+    let (main, query) = match url.split_once('?') {
+        Some((m, q)) => (m, Some(q)),
+        None => (url, None),
+    };
+    let (scheme, rest) = match main.split_once("://") {
+        Some((s, r)) => (Some(s), r),
+        None => (None, main),
+    };
+    let (authority, path) = match (scheme, rest.split_once('/')) {
+        (Some(_), Some((a, p))) => (Some(a), Some(p)),
+        (Some(_), None) => (Some(rest), None),
+        (None, _) => (None, Some(rest)),
+    };
+    let mut out = String::new();
+    if let Some(s) = scheme {
+        out.push_str(s);
+        out.push_str("://");
+    }
+    if let Some(a) = authority {
+        match a.rsplit_once('@') {
+            Some((userinfo, host)) => {
+                let user = match userinfo.split_once(':') {
+                    Some((u, _)) => format!("{u}:***"),
+                    None if looks_like_token(userinfo) => "<redacted>".to_string(),
+                    None => userinfo.to_string(),
+                };
+                out.push_str(&format!("{user}@{host}"));
+            }
+            None => out.push_str(a),
+        }
+    }
+    if let Some(p) = path {
+        if authority.is_some() {
+            out.push('/');
+        }
+        let segs: Vec<&str> = p.split('/').collect();
+        let shown: Vec<&str> = segs
+            .iter()
+            .enumerate()
+            .map(|(i, s)| if looks_like_token(s) && !(i > 0 && segs[i - 1] == "nar") { "<redacted>" } else { s })
+            .collect();
+        out.push_str(&shown.join("/"));
+    }
+    if let Some(q) = query {
+        out.push('?');
+        let params: Vec<String> = q
+            .split('&')
+            .map(|kv| match kv.split_once('=') {
+                Some((k, _)) if secret_param(k) => format!("{k}=<redacted>"),
+                _ => kv.to_string(),
+            })
+            .collect();
+        out.push_str(&params.join("&"));
+    }
+    out
+}
+
 enum Location {
     File(PathBuf),
     Http,
@@ -203,13 +295,13 @@ impl BinaryCache {
         }
         let location = if let Some(p) = base.strip_prefix("file://") {
             if !p.starts_with('/') {
-                return Err(format!("binary cache URL '{url}' must name an absolute path"));
+                return Err(format!("binary cache URL '{}' must name an absolute path", redact_url(url)));
             }
             Location::File(PathBuf::from(p))
         } else if base.starts_with("http://") || base.starts_with("https://") {
             Location::Http
         } else {
-            return Err(format!("don't know how to open binary cache '{url}'; use a file:// or https:// URL"));
+            return Err(format!("don't know how to open binary cache '{}'; use a file:// or https:// URL", redact_url(url)));
         };
         Ok(BinaryCache { url: base, location, params, http: HttpClient::default(), disk: None, info: OnceLock::new() })
     }
@@ -226,6 +318,11 @@ impl BinaryCache {
     pub fn with_narinfo_cache(mut self, disk: NarinfoCache) -> BinaryCache {
         self.disk = Some(disk);
         self
+    }
+
+    /// The URL for messages, with its secrets hidden.
+    pub fn shown(&self) -> String {
+        redact_url(&self.url)
     }
 
     pub fn param(&self, name: &str) -> Option<&str> {
@@ -258,7 +355,7 @@ impl BinaryCache {
             200 => Ok(Some(resp.body)),
             // S3 answers 403 for objects that do not exist.
             404 | 403 | 410 => Ok(None),
-            c => Err(format!("downloading '{url}': HTTP status {c}")),
+            c => Err(format!("downloading '{}': HTTP status {c}", redact_url(&url))),
         }
     }
 
@@ -302,7 +399,7 @@ impl BinaryCache {
     /// `realisations/<id>.doi`.
     pub fn query_realisation(&self, id: &crate::realisation::DrvOutput) -> Result<Option<crate::realisation::Realisation>> {
         let Some(data) = self.get_file(&format!("realisations/{id}.doi"))? else { return Ok(None) };
-        let v: serde_json::Value = serde_json::from_slice(&data).map_err(|e| format!("parsing realisation '{id}' from '{}': {e}", self.url))?;
+        let v: serde_json::Value = serde_json::from_slice(&data).map_err(|e| format!("parsing realisation '{id}' from '{}': {e}", self.shown()))?;
         crate::realisation::Realisation::from_json(&v).map(Some)
     }
 
@@ -358,7 +455,7 @@ impl BinaryCache {
         }
         let info = self.info()?;
         if info.store_dir != dir.as_str() {
-            return Err(format!("binary cache '{}' is for store directory '{}', not '{}'", self.url, info.store_dir, dir.as_str()));
+            return Err(format!("binary cache '{}' is for store directory '{}', not '{}'", self.shown(), info.store_dir, dir.as_str()));
         }
         Ok(())
     }
@@ -376,7 +473,7 @@ impl BinaryCache {
             }
         };
         match data {
-            Some(d) => NarInfo::parse(dir, &String::from_utf8_lossy(&d), &format!("{}/{rel}", self.url)).map(Some),
+            Some(d) => NarInfo::parse(dir, &String::from_utf8_lossy(&d), &format!("{}/{rel}", self.shown())).map(Some),
             None => Ok(None),
         }
     }
@@ -397,7 +494,7 @@ impl BinaryCache {
         let compression = Compression::parse(&ni.compression)?;
         let file_algo = ni.file_hash.as_ref().map_or(HashAlgo::Sha256, |h| h.algo);
         let mut file_r = HashingReader { inner: self.open_file(&ni.url)?, sink: HashSink::new(file_algo) };
-        let err = |e: io::Error| format!("unpacking '{what}' from '{}': {e}", self.url);
+        let err = |e: io::Error| format!("unpacking '{what}' from '{}': {e}", self.shown());
         let (nar_hash, nar_size) = {
             let dec = compression.decoder(&mut file_r).map_err(err)?;
             let mut nar_r = HashingReader { inner: dec, sink: HashSink::new(ni.nar_hash.algo) };
@@ -423,7 +520,7 @@ impl BinaryCache {
         if nar_hash != ni.nar_hash || nar_size != ni.nar_size {
             return Err(format!(
                 "NAR hash mismatch in '{what}' from '{}':\n  specified: {} ({} bytes)\n  got:       {} ({nar_size} bytes)",
-                self.url,
+                self.shown(),
                 ni.nar_hash.to_sri(),
                 ni.nar_size,
                 nar_hash.to_sri()
@@ -497,7 +594,7 @@ impl BinaryCache {
 
 impl std::fmt::Debug for BinaryCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "BinaryCache({})", self.url)
+        write!(f, "BinaryCache({})", self.shown())
     }
 }
 
@@ -520,6 +617,30 @@ mod tests {
 
     use cranix_core::signing::PublicKey;
     use cranix_core::StorePath;
+
+    #[test]
+    fn redacts_secrets_in_urls() {
+        let r = redact_url;
+        assert_eq!(r("http://host:5080/glpat-TESTTOKEN0123456789/?priority=10&trusted=true"), "http://host:5080/<redacted>/?priority=10&trusted=true");
+        assert_eq!(r("https://user:hunter2@cache.example.org/"), "https://user:***@cache.example.org/");
+        assert_eq!(r("https://glpat-TESTTOKEN0123456789@cache.example.org"), "https://<redacted>@cache.example.org");
+        assert_eq!(r("https://c.example/x?token=abc&compression=zstd&secret-key=/k&priority=40"), "https://c.example/x?token=<redacted>&compression=zstd&secret-key=<redacted>&priority=40");
+        assert_eq!(r("https://h/api/v4/projects/12/packages/AbCdEf0123456789xyzQRS/nix"), "https://h/api/v4/projects/12/packages/<redacted>/nix");
+        assert_eq!(r("https://h/ghp_short"), "https://h/<redacted>");
+        // Store hashes, NAR files, narinfos and plain names stay.
+        let plain = [
+            "https://cache.nixos.org",
+            "https://cache.nixos.org/nix-cache-info",
+            "https://cache.nixos.org/0mji3qb7l6i7ywfyqm2xrriavjlxmnfn.narinfo",
+            "https://h/nar/1i7bv7ya2j2z5y4y7kzig8b3c20d07hkh07wgiipv0ha9k3rxgh1.nar.xz",
+            "https://h/my-company-binary-cache-prod/",
+            "file:///var/cache/nix-binary-cache-2024",
+            "file:///tmp/c?trusted=true",
+        ];
+        for u in plain {
+            assert_eq!(r(u), u);
+        }
+    }
 
     #[test]
     fn file_cache_round_trip() {

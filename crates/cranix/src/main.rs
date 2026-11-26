@@ -10,7 +10,7 @@ use cranix_core::hash::{Encoding, Hash, HashAlgo, HashSink};
 use cranix_core::{nar, FileIngestion, OutputKind, StorePath};
 use cranix_eval::value::{Attrs, Sym};
 use cranix_eval::{print, Eval, Options, RenderOptions, Value};
-use cranix_store::binary_cache::{read_secret_keys, BinaryCache};
+use cranix_store::binary_cache::{read_secret_keys, redact_url, BinaryCache};
 use cranix_store::build::{default_root, BuildOptions};
 use cranix_store::settings::{Kind, Settings};
 use cranix_store::substitute::{http_client, trusted_keys, Substituters};
@@ -48,7 +48,7 @@ commands:
   store sign -k KEYFILE [-r] PATH...            add signatures to local paths
   copy --to URL PATH... | copy --from URL PATH...   copy closures to or from a binary cache
   key generate-secret --key-name NAME | key convert-secret-to-public < KEY
-  config show [NAME]                             print the settings in effect
+  config show [--show-secrets] [NAME]            print the settings in effect
   store serve [--write]                          serve the store to ssh:// clients (also: --serve)
   daemon [--stdio] [--socket PATH] [--force-trusted|--force-untrusted]
                                                  serve the store to Nix clients
@@ -247,7 +247,7 @@ fn open_local_store(cli: &Cli) -> Result<Store, String> {
         return remote::eval_store(u);
     }
     if let Some(u) = store_url(cli) {
-        return Err(format!("binary cache '{u}' can only be used with 'store path-info'"));
+        return Err(format!("binary cache '{}' can only be used with 'store path-info'", redact_url(&u)));
     }
     match &cli.store {
         Some(d) => Store::open_at(d),
@@ -1111,7 +1111,7 @@ fn cmd_copy(cli: &Cli, args: &[String]) -> Result<(), String> {
                 if cache.file_exists(&format!("{}.narinfo", p.hash_part()))? {
                     continue;
                 }
-                eprintln!("copying path '{}' to '{}'...", store.dir.print(p), cache.url);
+                eprintln!("copying path '{}' to '{}'...", store.dir.print(p), cache.shown());
                 let info = store.query_info(p)?.ok_or_else(|| format!("path '{}' is not valid", store.dir.print(p)))?;
                 cache.add_path(&store.dir, &store.real_path(p), &info, &store.query_sigs(p)?, &keys)?;
                 copied += 1;
@@ -1133,7 +1133,7 @@ fn cmd_copy(cli: &Cli, args: &[String]) -> Result<(), String> {
             );
             let failed = store.substitute_paths(&roots)?;
             if let Some(p) = failed.first() {
-                return Err(format!("path '{}' is not available from '{from}'", store.dir.print(p)));
+                return Err(format!("path '{}' is not available from '{}'", store.dir.print(p), redact_url(&from)));
             }
             Ok(())
         }
@@ -1141,21 +1141,26 @@ fn cmd_copy(cli: &Cli, args: &[String]) -> Result<(), String> {
     }
 }
 
-/// `config show [NAME]`: the settings in effect, as `name = value` lines.
+/// `config show [--show-secrets] [NAME]`: the settings in effect, as
+/// `name = value` lines. Secrets in substituter URLs and access tokens are
+/// hidden unless `--show-secrets` is given.
 fn cmd_config(cli: &Cli, args: &[String]) -> Result<(), String> {
-    match args {
-        [c] if c == "show" => {
+    let secrets = args.iter().any(|a| a == "--show-secrets");
+    let rest: Vec<&String> = args.iter().filter(|a| *a != "--show-secrets").collect();
+    let value = |n: &str| if secrets { cli.settings.get(n) } else { cli.settings.get_shown(n) };
+    match rest.as_slice() {
+        [c] if *c == "show" => {
             for n in Settings::names() {
-                println!("{n} = {}", cli.settings.get(n).unwrap_or_default());
+                println!("{n} = {}", value(n).unwrap_or_default());
             }
             Ok(())
         }
-        [c, name] if c == "show" => {
-            let v = cli.settings.get(name).ok_or_else(|| format!("could not find setting '{name}'"))?;
+        [c, name] if *c == "show" => {
+            let v = value(name).ok_or_else(|| format!("could not find setting '{name}'"))?;
             println!("{v}");
             Ok(())
         }
-        _ => Err("usage: cranix config show [NAME]".into()),
+        _ => Err("usage: cranix config show [--show-secrets] [NAME]".into()),
     }
 }
 

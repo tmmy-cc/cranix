@@ -20,6 +20,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use crate::binary_cache::redact_url;
 use crate::build::BuildOptions;
 use crate::Result;
 
@@ -409,6 +410,16 @@ impl Settings {
             "cores" => b.cores.to_string(),
             _ => return None,
         })
+    }
+
+    /// [`Settings::get`] with secrets hidden: substituter URLs through
+    /// [`redact_url`] and the tokens of `access-tokens`.
+    pub fn get_shown(&self, name: &str) -> Option<String> {
+        match name {
+            "substituters" => Some(self.substituters.iter().map(|u| redact_url(u)).collect::<Vec<_>>().join(" ")),
+            "access-tokens" => Some(self.fetch.access_tokens.keys().map(|h| format!("{h}=<redacted>")).collect::<Vec<_>>().join(" ")),
+            _ => self.get(name),
+        }
     }
 
     /// The names [`Settings::get`] knows, sorted.
