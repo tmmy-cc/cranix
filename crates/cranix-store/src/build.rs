@@ -338,6 +338,10 @@ impl Store {
                     if !self.missing_outputs(d)? {
                         continue;
                     }
+                    let floating = opts.ca_derivations && d.has_unknown_outputs() && !d.is_impure();
+                    if floating && opts.substitute && !no_subst.contains(&p) && self.substitute_realisations(d, opts.logger.as_ref())? {
+                        continue;
+                    }
                     match self.missing_output_paths(d) {
                         Some(outs) if opts.substitute && !no_subst.contains(&p) && self.substitutable(&outs) => {
                             fetch.insert(p, outs);

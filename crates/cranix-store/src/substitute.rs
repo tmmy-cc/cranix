@@ -10,13 +10,14 @@ use std::io::Write;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cranix_core::signing::{PublicKey, SecretKey};
-use cranix_core::{NarInfo, StorePath};
+use cranix_core::{Derivation, NarInfo, StorePath};
 
 use crate::binary_cache::BinaryCache;
 use crate::build::{log_message, BuildLogger};
 use crate::settings::Settings;
 use crate::http::HttpClient;
 use crate::narinfo_cache::{self, NarinfoCache};
+use crate::realisation::DrvOutput;
 use crate::{canonicalise, fsutil, PathInfo, Result, Store};
 
 /// The caches a store substitutes from, and how much it trusts them.
@@ -245,6 +246,46 @@ impl Store {
             frontier = next;
         }
         Some(plan)
+    }
+
+    /// Fetches the realisations of `drv`'s outputs that have no static path
+    /// from the caches, with the paths they name. Realisations need a
+    /// signature by a trusted key when `require-sigs` is set. Returns
+    /// whether every output of `drv` is known afterwards.
+    pub fn substitute_realisations(&self, drv: &Derivation, logger: Option<&Arc<dyn BuildLogger>>) -> Result<bool> {
+        if self.subst.is_empty() {
+            return Ok(false);
+        }
+        let h = self.static_output_hash(drv)?;
+        for (name, o) in &drv.outputs {
+            if o.path.is_some() || self.query_output_realisation(drv, name)?.is_some() {
+                continue;
+            }
+            let id = DrvOutput { drv_hash: h.clone(), output: name.clone() };
+            let mut found = None;
+            for &i in self.cache_order() {
+                let c = &self.subst.caches[i];
+                match c.query_realisation(&id) {
+                    Ok(Some(r)) if r.id != id => log_message(logger, &format!("warning: substituter '{}' returned realisation '{}' for '{id}'", c.url, r.id)),
+                    Ok(Some(r)) if self.subst.require_sigs && !r.is_signed_by(&self.subst.keys) => log_message(
+                        logger,
+                        &format!("warning: ignoring realisation '{id}' from '{}', as it's not signed by any of the keys in 'trusted-public-keys'", c.url),
+                    ),
+                    Ok(Some(r)) => {
+                        found = Some(r);
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(e) => log_message(logger, &format!("warning: {e}")),
+                }
+            }
+            let Some(r) = found else { return Ok(false) };
+            if !self.substitute_paths_logged(std::slice::from_ref(&r.out_path), logger)?.is_empty() {
+                return Ok(false);
+            }
+            self.register_realisation(&r)?;
+        }
+        Ok(true)
     }
 
     /// Queries substitutes for many paths at once.

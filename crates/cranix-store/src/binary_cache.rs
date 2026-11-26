@@ -298,6 +298,24 @@ impl BinaryCache {
         r
     }
 
+    /// The realisation `id` (`sha256:<hex>!<output>`) the cache holds in
+    /// `realisations/<id>.doi`.
+    pub fn query_realisation(&self, id: &crate::realisation::DrvOutput) -> Result<Option<crate::realisation::Realisation>> {
+        let Some(data) = self.get_file(&format!("realisations/{id}.doi"))? else { return Ok(None) };
+        let v: serde_json::Value = serde_json::from_slice(&data).map_err(|e| format!("parsing realisation '{id}' from '{}': {e}", self.url))?;
+        crate::realisation::Realisation::from_json(&v).map(Some)
+    }
+
+    /// Uploads a realisation, signed with `keys` in addition to the
+    /// signatures it has.
+    pub fn add_realisation(&self, r: &crate::realisation::Realisation, keys: &[SecretKey]) -> Result<()> {
+        let mut r = r.clone();
+        for k in keys {
+            r.sign(k);
+        }
+        self.put_bytes(&format!("realisations/{}.doi", r.id), r.to_json().to_string().as_bytes(), "application/json")
+    }
+
     /// `nix-cache-info`, fetched once. A cache without one is taken to
     /// hold `/nix/store` paths.
     pub fn info(&self) -> Result<CacheInfo> {

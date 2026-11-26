@@ -258,6 +258,7 @@ fn open_local_store(cli: &Cli) -> Result<Store, String> {
 fn open_store(cli: &Cli) -> Result<Store, String> {
     let mut store = open_local_store(cli)?;
     store.set_substituters(Substituters::from_settings(&cli.settings)?);
+    store.set_signing_keys(read_secret_keys(cli.settings.secret_key_files.iter().map(String::as_str))?);
     Ok(store)
 }
 
@@ -1114,6 +1115,10 @@ fn cmd_copy(cli: &Cli, args: &[String]) -> Result<(), String> {
                 let info = store.query_info(p)?.ok_or_else(|| format!("path '{}' is not valid", store.dir.print(p)))?;
                 cache.add_path(&store.dir, &store.real_path(p), &info, &store.query_sigs(p)?, &keys)?;
                 copied += 1;
+            }
+            // Realisations of the copied outputs follow their paths.
+            for r in store.realisations_of(&seen)? {
+                cache.add_realisation(&r, &keys)?;
             }
             eprintln!("copied {copied} paths");
             Ok(())

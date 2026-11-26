@@ -54,6 +54,18 @@ pub struct Store {
     /// `hashDerivationModulo` of `.drv` files, which content-addressed
     /// builds need to name realisations.
     drv_hashes: Mutex<HashMap<StorePath, DrvHash>>,
+    /// `secret-key-files`: keys that sign the realisations registered here.
+    signing_keys: SigningKeys,
+}
+
+/// Secret keys, printed by their names only.
+#[derive(Default)]
+pub(crate) struct SigningKeys(pub(crate) Vec<cranix_core::signing::SecretKey>);
+
+impl std::fmt::Debug for SigningKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.0.iter().map(|k| k.to_public().to_string())).finish()
+    }
 }
 
 fn flock(f: &fs::File, op: i32) -> io::Result<()> {
@@ -87,7 +99,7 @@ impl Store {
             .open(&lock_path)
             .map_err(io_err(format!("opening '{}'", lock_path.display())))?;
         flock(&lock, libc::LOCK_SH).map_err(io_err("locking the store"))?;
-        Ok(Store { dir, real, state, lock, subst: Default::default(), drv_hashes: Mutex::new(HashMap::new()) })
+        Ok(Store { dir, real, state, lock, subst: Default::default(), drv_hashes: Mutex::new(HashMap::new()), signing_keys: SigningKeys::default() })
     }
 
     /// A store where the logical and physical directories coincide; this is

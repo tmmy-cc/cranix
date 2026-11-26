@@ -108,8 +108,39 @@ impl Store {
         self.state.join("realisations").join(format!("{id}.doi"))
     }
 
+    /// Signs realisations registered from now on with `keys`.
+    pub fn set_signing_keys(&mut self, keys: Vec<SecretKey>) {
+        self.signing_keys = crate::SigningKeys(keys);
+    }
+
+    /// Records `r`, signed with the store's signing keys.
     pub fn register_realisation(&self, r: &Realisation) -> Result<()> {
+        let mut r = r.clone();
+        for k in &self.signing_keys.0 {
+            r.sign(k);
+        }
         fsutil::write_atomic(&self.realisation_file(&r.id), r.to_json().to_string().as_bytes())
+    }
+
+    /// The recorded realisations whose output is one of `paths`.
+    pub fn realisations_of(&self, paths: &BTreeSet<StorePath>) -> Result<Vec<Realisation>> {
+        let dir = self.state.join("realisations");
+        let mut out = Vec::new();
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(format!("listing realisations: {e}")),
+        };
+        for e in entries {
+            let e = e.map_err(|e| format!("listing realisations: {e}"))?;
+            let r = fs::read_to_string(e.path())
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .and_then(|v| Realisation::from_json(&v).ok());
+            out.extend(r.filter(|r| paths.contains(&r.out_path)));
+        }
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(out)
     }
 
     /// The realisation of `id`, if one is recorded and its path is valid.
