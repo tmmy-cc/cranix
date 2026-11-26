@@ -298,7 +298,7 @@ fn run() -> Result<(), String> {
                 return Err("oxnix daemon serves a local store; pass --store DIR".into());
             }
             let builders = cli.builders.clone().unwrap_or_else(remote::default_builders);
-            remote::cmd_daemon(open_store(&cli)?, &args, BuildOptions { system: cli.system.clone(), ..Default::default() }, &builders)
+            remote::cmd_daemon(open_store(&cli)?, &args, build_options(&cli), &builders)
         }
         c => Err(format!("unknown command '{c}'\n{USAGE}")),
     }
@@ -309,7 +309,7 @@ fn serve(cli: &Cli, args: &[String]) -> Result<(), String> {
         return Err("serving needs a local store; pass --store DIR".into());
     }
     let builders = cli.builders.clone().unwrap_or_else(remote::default_builders);
-    remote::cmd_serve(open_store(cli)?, args, BuildOptions { system: cli.system.clone(), ..Default::default() }, &builders)
+    remote::cmd_serve(open_store(cli)?, args, build_options(&cli), &builders)
 }
 
 struct Target {
@@ -357,6 +357,15 @@ fn render_error(ev: &Eval, cli: &Cli, e: &oxnix_eval::EvalError) -> String {
     use std::io::IsTerminal;
     let color = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").map_or(true, |v| v.is_empty());
     ev.render_error(e, &RenderOptions { show_trace: cli.show_trace, color })
+}
+
+fn build_options(cli: &Cli) -> BuildOptions {
+    BuildOptions {
+        system: cli.system.clone(),
+        ca_derivations: cli.features.contains("ca-derivations"),
+        impure_derivations: cli.features.contains("impure-derivations"),
+        ..Default::default()
+    }
 }
 
 fn cwd() -> String {
@@ -485,7 +494,7 @@ fn cmd_instantiate(cli: &Cli, args: &[String], build: bool) -> Result<(), String
         }
         return Ok(());
     }
-    let mut opts = BuildOptions { system: cli.system.clone(), ..Default::default() };
+    let mut opts = build_options(cli);
     for (k, v) in &cli.options {
         if !opts.set(k, v)? {
             eprintln!("warning: unknown setting '{k}'");

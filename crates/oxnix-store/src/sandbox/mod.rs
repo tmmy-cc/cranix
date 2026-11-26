@@ -152,7 +152,8 @@ pub(crate) fn plan(
     let printed = store.dir.print(drv_path);
     let no_chroot = attrs.get_bool("__noChroot");
     let extra_profile = attrs.get_string("__sandboxProfile").unwrap_or_default();
-    let sandboxed = !drv.is_fixed_output();
+    // Fixed-output and impure derivations keep the network, as in Nix.
+    let sandboxed = !drv.is_fixed_output() && !drv.is_impure();
     let chroot = match opts.sandbox {
         SandboxMode::Enabled => {
             if no_chroot {

@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use oxnix_core::derivation::{hash_placeholder, rewrite_strings};
 use oxnix_core::hash::{Hash, HashAlgo, HashSink};
 use oxnix_core::{nar, Derivation, FileIngestion, StorePath};
 
@@ -49,6 +50,11 @@ pub struct BuildOptions {
     pub hook: Option<Arc<dyn BuildHook>>,
     /// Receives build progress and output in place of stderr.
     pub logger: Option<Arc<dyn BuildLogger>>,
+    /// The `ca-derivations` experimental feature: build content-addressed
+    /// derivations and record realisations of every output.
+    pub ca_derivations: bool,
+    /// The `impure-derivations` experimental feature.
+    pub impure_derivations: bool,
 }
 
 /// Receives the activity of builds: one `start`, the builder's output
@@ -145,6 +151,8 @@ impl Default for BuildOptions {
             max_silent_time: 0,
             hook: None,
             logger: None,
+            ca_derivations: false,
+            impure_derivations: false,
         }
     }
 }
@@ -233,8 +241,22 @@ impl Store {
         Derivation::parse(&self.dir, name, &text)
     }
 
-    fn missing_outputs(&self, d: &Derivation) -> bool {
-        d.outputs.values().any(|o| o.path.as_ref().map_or(true, |p| !self.is_valid(p)))
+    /// Whether some output of `d` has to be built. Outputs without a static
+    /// path are present when a realisation records them.
+    pub(crate) fn missing_outputs(&self, d: &Derivation) -> Result<bool> {
+        if d.is_impure() {
+            return Ok(true);
+        }
+        for (name, o) in &d.outputs {
+            let present = match &o.path {
+                Some(p) => self.is_valid(p),
+                None => self.query_output_realisation(d, name)?.is_some(),
+            };
+            if !present {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// The invalid output paths of `d`; `None` if an output's path is only
@@ -262,6 +284,7 @@ impl Store {
         // instead, together with their closures, and their inputs are not
         // needed; those whose substitution fails are built after all.
         let mut loaded: HashMap<StorePath, Derivation> = HashMap::new();
+        let built = Mutex::new(HashMap::new());
         let mut no_subst: BTreeSet<StorePath> = BTreeSet::new();
         let needed = loop {
             let mut needed: BTreeSet<StorePath> = BTreeSet::new();
@@ -285,7 +308,7 @@ impl Store {
                         continue;
                     }
                     let d = &loaded[&p];
-                    if !self.missing_outputs(d) {
+                    if !self.missing_outputs(d)? {
                         continue;
                     }
                     match self.missing_output_paths(d) {
@@ -328,13 +351,16 @@ impl Store {
             if !self.can_build() && opts.hook.is_none() {
                 return Err(self.cannot_build());
             }
-            self.run_scheduler(&loaded, &needed, opts)?;
+            self.run_scheduler(&loaded, &needed, opts, &built)?;
         }
 
+        let built = built.into_inner().unwrap();
         let mut out = BTreeMap::new();
         for p in drvs {
-            let d = &loaded[p];
-            let m = d.outputs.iter().filter_map(|(n, o)| Some((n.clone(), o.path.clone()?))).collect();
+            let m = match built.get(p) {
+                Some(m) => m.clone(),
+                None => self.output_paths(p, &loaded[p])?,
+            };
             out.insert(p.clone(), m);
         }
         Ok(out)
@@ -352,13 +378,13 @@ impl Store {
     /// file in this store (the daemon's `BuildDerivation`). Its inputs must
     /// all be listed in `input_srcs` and be valid.
     pub fn build_basic(&self, drv_path: &StorePath, drv: &Derivation, opts: &BuildOptions) -> Result<()> {
-        if !self.missing_outputs(drv) {
+        if !self.missing_outputs(drv)? {
             return Ok(());
         }
         if !self.can_build() && opts.hook.is_none() {
             return Err(self.cannot_build());
         }
-        self.build_one(drv_path, drv, &HashMap::new(), opts, "")
+        self.build_one(drv_path, drv, &HashMap::new(), opts, "", &Mutex::new(HashMap::new()))
     }
 
     fn run_scheduler(
@@ -366,6 +392,7 @@ impl Store {
         drvs: &HashMap<StorePath, Derivation>,
         needed: &BTreeSet<StorePath>,
         opts: &BuildOptions,
+        built: &Built,
     ) -> Result<()> {
         struct Sched {
             waiting: HashMap<StorePath, usize>,
@@ -421,7 +448,7 @@ impl Store {
                         return;
                     };
                     let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    let r = self.build_one(&p, &drvs[&p], drvs, opts, &format!(" ({n}/{total})"));
+                    let r = self.build_one(&p, &drvs[&p], drvs, opts, &format!(" ({n}/{total})"), built);
                     let mut g = state.lock().unwrap();
                     g.running -= 1;
                     match r {
@@ -456,19 +483,45 @@ impl Store {
         all: &HashMap<StorePath, Derivation>,
         opts: &BuildOptions,
         progress: &str,
+        built: &Built,
     ) -> Result<()> {
-        let outputs: Vec<(&String, &StorePath)> = drv
-            .outputs
-            .iter()
-            .map(|(n, o)| o.path.as_ref().map(|p| (n, p)).ok_or_else(|| format!("output '{n}' of '{drv_path}' has no fixed path")))
-            .collect::<Result<_>>()?;
+        let outputs = if needs_resolution(drv) {
+            self.build_resolved(drv_path, drv, all, opts, built)?
+        } else {
+            self.build_derivation(drv_path, drv, all, opts, progress)?
+        };
+        built.lock().unwrap().insert(drv_path.clone(), outputs);
+        Ok(())
+    }
+
+    /// Runs the builder of `drv` and registers its outputs. Returns the
+    /// output paths.
+    pub(crate) fn build_derivation(
+        &self,
+        drv_path: &StorePath,
+        drv: &Derivation,
+        all: &HashMap<StorePath, Derivation>,
+        opts: &BuildOptions,
+        progress: &str,
+    ) -> Result<BTreeMap<String, StorePath>> {
+        check_features(drv, opts)?;
+        // Outputs whose final path is unknown are built at a scratch path
+        // and moved once their content hash is known.
+        let mut outputs: Vec<(&String, StorePath)> = Vec::new();
+        for (n, o) in &drv.outputs {
+            let p = match &o.path {
+                Some(p) => p.clone(),
+                None => self.scratch_path(drv_path, drv, n)?,
+            };
+            outputs.push((n, p));
+        }
         // Concurrent requests for the same derivation build it once: the
-        // later ones wait here and then find the outputs valid.
+        // later ones wait here and then find the outputs present.
         let mut keys: Vec<String> = outputs.iter().map(|(_, p)| format!("build:{}", self.real_path(p).display())).collect();
         keys.sort();
         let _locks: Vec<PathLock> = keys.into_iter().map(PathLock::take).collect();
-        if !self.missing_outputs(drv) {
-            return Ok(());
+        if !self.missing_outputs(drv)? {
+            return self.output_paths(drv_path, drv);
         }
         let drv_s = self.dir.print(drv_path);
         let log = BuildLog::start(opts, &drv_s, &drv.name, &format!("building '{drv_s}'{progress}"));
@@ -479,7 +532,7 @@ impl Store {
 
         let _slot = match &opts.hook {
             Some(h) if !drv.builder.starts_with("builtin:") => match h.build(self, drv_path, drv, opts, &log)? {
-                HookOutcome::Built => return Ok(()),
+                HookOutcome::Built => return self.output_paths(drv_path, drv),
                 HookOutcome::Local(slot) => slot,
             },
             _ => None,
@@ -503,10 +556,12 @@ impl Store {
             }
         }
         let inputs = self.closure(inputs)?;
+        let rewrites: BTreeMap<String, String> =
+            outputs.iter().map(|(n, p)| (hash_placeholder(n), self.dir.print(p))).collect();
 
         if let Some(b) = drv.builder.strip_prefix("builtin:") {
             match b {
-                "fetchurl" => self.builtin_fetchurl(drv, outputs[0].1)?,
+                "fetchurl" => self.builtin_fetchurl(drv, &outputs[0].1)?,
                 _ => return Err(format!("unsupported builtin builder '{}'", drv.builder)),
             }
         } else {
@@ -518,14 +573,36 @@ impl Store {
                     opts.system
                 ));
             }
-            let outs: Vec<&StorePath> = outputs.iter().map(|(_, p)| *p).collect();
-            self.run_builder(drv_path, drv, &inputs, &outs, opts, &log)?;
+            let outs: Vec<&StorePath> = outputs.iter().map(|(_, p)| p).collect();
+            self.run_builder(drv_path, drv, &inputs, &outs, opts, &log, &rewrites)?;
         }
 
         let mut candidates = inputs;
-        candidates.extend(outputs.iter().map(|(_, p)| (*p).clone()));
+        candidates.extend(outputs.iter().map(|(_, p)| p.clone()));
 
-        for (name, p) in &outputs {
+        let result = if drv.has_unknown_outputs() {
+            self.register_floating(drv_path, drv, &outputs, &candidates)?
+        } else {
+            self.register_input_addressed(drv_path, drv, &outputs, &candidates)?
+        };
+        if opts.ca_derivations && !drv.is_impure() {
+            let h = self.static_output_hash(drv)?;
+            for (name, p) in &result {
+                let id = crate::realisation::DrvOutput { drv_hash: h.clone(), output: name.clone() };
+                self.register_realisation(&crate::realisation::Realisation::new(id, p.clone()))?;
+            }
+        }
+        Ok(result)
+    }
+
+    fn register_input_addressed(
+        &self,
+        drv_path: &StorePath,
+        drv: &Derivation,
+        outputs: &[(&String, StorePath)],
+        candidates: &BTreeSet<StorePath>,
+    ) -> Result<BTreeMap<String, StorePath>> {
+        for (name, p) in outputs {
             let real = self.real_path(p);
             if real.symlink_metadata().is_err() {
                 return Err(format!("builder for '{}' failed to produce output '{name}' at '{}'", self.dir.print(drv_path), self.dir.print(p)));
@@ -560,11 +637,11 @@ impl Store {
             let references = if ca.is_some() {
                 BTreeSet::new()
             } else {
-                refs::scan_path(&real, &candidates).map_err(|e| format!("scanning references: {e}"))?
+                refs::scan_path(&real, candidates).map_err(|e| format!("scanning references: {e}"))?
             };
-            self.register(&PathInfo { path: (*p).clone(), nar_hash, nar_size, references, deriver: Some(drv_path.clone()), ca })?;
+            self.register(&PathInfo { path: p.clone(), nar_hash, nar_size, references, deriver: Some(drv_path.clone()), ca })?;
         }
-        Ok(())
+        Ok(outputs.iter().map(|(n, p)| ((*n).clone(), p.clone())).collect())
     }
 
     fn run_builder(
@@ -575,6 +652,7 @@ impl Store {
         outputs: &[&StorePath],
         opts: &BuildOptions,
         build_log: &BuildLog,
+        rewrites: &BTreeMap<String, String>,
     ) -> Result<()> {
         let spec = sandbox::plan(self, drv_path, drv, inputs, opts)?;
 
@@ -598,7 +676,7 @@ impl Store {
                 return Err(e);
             }
         };
-        let r = self.run_in(drv_path, drv, &sb, &top, &top_s, outputs, opts, build_log);
+        let r = self.run_in(drv_path, drv, &sb, &top, &top_s, outputs, opts, build_log, rewrites);
         let failed = r.is_err();
         let cleaned = sb.cleanup();
         if !failed || !opts.keep_failed {
@@ -618,6 +696,7 @@ impl Store {
         outputs: &[&StorePath],
         opts: &BuildOptions,
         build_log: &BuildLog,
+        rewrites: &BTreeMap<String, String>,
     ) -> Result<()> {
         // The build directory as the builder sees it.
         let tmp = sb.build_dir(top_s);
@@ -631,6 +710,7 @@ impl Store {
         let pass_as_file: BTreeSet<&str> =
             drv.env.get("passAsFile").map(|s| s.split_whitespace().collect()).unwrap_or_default();
         for (k, v) in &drv.env {
+            let v = &rewrite_strings(v, rewrites);
             if pass_as_file.contains(k.as_str()) {
                 let f = format!(".attr-{}", Hash::sha256(k.as_bytes()).to_nix32());
                 fs::write(top.join(&f), v).map_err(|e| format!("writing {f}: {e}"))?;
@@ -640,11 +720,12 @@ impl Store {
             }
         }
         if let Some(json) = drv.env.get("__json") {
+            let json = rewrite_strings(json, rewrites);
             env.remove("__json");
             fs::write(top.join(".attrs.json"), json).map_err(|e| format!("writing .attrs.json: {e}"))?;
             env.insert("NIX_ATTRS_JSON_FILE".into(), format!("{tmp}/.attrs.json"));
         }
-        if drv.is_fixed_output() {
+        if drv.is_fixed_output() || drv.is_impure() {
             for v in drv.env.get("impureEnvVars").map(|s| s.split_whitespace()).into_iter().flatten() {
                 if let Ok(val) = std::env::var(v) {
                     env.insert(v.to_string(), val);
@@ -657,6 +738,7 @@ impl Store {
         env.insert("NIX_LOG_FD".into(), "2".into());
         env.insert("TERM".into(), "xterm-256color".into());
 
+        let args: Vec<String> = drv.args.iter().map(|a| rewrite_strings(a, rewrites)).collect();
         let log_path = self.log_path(drv_path);
         let log = Mutex::new(fs::File::create(&log_path).map_err(|e| format!("creating log: {e}"))?);
         let failure = |what: String| {
@@ -670,7 +752,7 @@ impl Store {
         let (out_r, out_w) = log_pipe().map_err(|e| format!("creating log pipe: {e}"))?;
         let out_w2 = out_w.try_clone().map_err(|e| format!("creating log pipe: {e}"))?;
         let spawned = sb
-            .command(&drv.builder, &drv.args, top, &drv.platform)
+            .command(&drv.builder, &args, top, &drv.platform)
             .env_clear()
             .envs(&env)
             .stdin(Stdio::null())
@@ -864,6 +946,29 @@ fn wait_exited(pid: libc::pid_t) -> std::io::Result<()> {
 fn kill_group(pgid: libc::pid_t) {
     // SAFETY: kill has no memory-safety preconditions.
     unsafe { libc::kill(-pgid, libc::SIGKILL) };
+}
+
+/// Outputs built so far in one `realise` call, by derivation.
+pub(crate) type Built = Mutex<HashMap<StorePath, BTreeMap<String, StorePath>>>;
+
+/// Derivations whose inputs have to be substituted by their realised paths
+/// before building: content-addressed floating, impure and deferred ones.
+fn needs_resolution(drv: &Derivation) -> bool {
+    !drv.input_drvs.is_empty() && drv.has_unknown_outputs()
+}
+
+fn check_features(drv: &Derivation, opts: &BuildOptions) -> Result<()> {
+    let missing = if drv.is_impure() && !opts.impure_derivations {
+        Some("impure-derivations")
+    } else if drv.has_unknown_outputs() && !drv.is_impure() && !opts.ca_derivations {
+        Some("ca-derivations")
+    } else {
+        None
+    };
+    match missing {
+        Some(f) => Err(format!("experimental Nix feature '{f}' is disabled; add '--extra-experimental-features {f}' to enable it")),
+        None => Ok(()),
+    }
 }
 
 pub fn platform_compatible(want: &str, have: &str) -> bool {

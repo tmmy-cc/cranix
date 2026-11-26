@@ -873,11 +873,25 @@ fn realised_path(ev: &Eval, v: &Value) -> R<String> {
             _ => None,
         })
         .collect();
-    if !drvs.is_empty() {
-        let opts = oxnix_store::build::BuildOptions { system: ev.opts.system.clone(), ..Default::default() };
-        ev.store.realise(&drvs, &opts).or_else(|e| err(format!("building for import from derivation: {e}")))?;
+    if drvs.is_empty() {
+        return Ok(p);
     }
-    Ok(p)
+    let opts = oxnix_store::build::BuildOptions {
+        system: ev.opts.system.clone(),
+        ca_derivations: ev.opts.experimental_features.contains("ca-derivations"),
+        impure_derivations: ev.opts.experimental_features.contains("impure-derivations"),
+        ..Default::default()
+    };
+    let built = ev.store.realise(&drvs, &opts).or_else(|e| err(format!("building for import from derivation: {e}")))?;
+    // Outputs of content-addressed derivations appear as placeholders
+    // until they are built.
+    let mut rewrites = std::collections::BTreeMap::new();
+    for (drv, outs) in &built {
+        for (o, path) in outs {
+            rewrites.insert(oxnix_core::derivation::downstream_placeholder(drv, o), ev.store.dir.print(path));
+        }
+    }
+    Ok(oxnix_core::derivation::rewrite_strings(&p, &rewrites))
 }
 
 fn find_file(ev: &Eval, path: &Value, name: &str) -> R<Value> {

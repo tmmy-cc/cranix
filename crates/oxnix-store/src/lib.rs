@@ -8,23 +8,26 @@
 
 pub mod binary_cache;
 pub mod build;
+mod ca;
 pub mod config;
 mod fsutil;
-pub mod http;
-pub mod narinfo_cache;
 pub mod gc_roots;
+pub mod http;
 mod nar_import;
+pub mod narinfo_cache;
+pub mod realisation;
 pub mod refs;
 pub mod substitute;
 pub mod sandbox;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use oxnix_core::hash::{Hash, HashAlgo, HashSink};
-use oxnix_core::{nar, FileIngestion, StoreDir, StorePath};
+use oxnix_core::{nar, DrvHash, FileIngestion, StoreDir, StorePath};
 
 pub use fsutil::canonicalise;
 
@@ -48,6 +51,9 @@ pub struct Store {
     lock: fs::File,
     /// Binary caches consulted for missing paths; none by default.
     subst: substitute::Substituters,
+    /// `hashDerivationModulo` of `.drv` files, which content-addressed
+    /// builds need to name realisations.
+    drv_hashes: Mutex<HashMap<StorePath, DrvHash>>,
 }
 
 fn flock(f: &fs::File, op: i32) -> io::Result<()> {
@@ -70,7 +76,7 @@ impl Store {
     /// Opens (creating if needed) a store whose objects live in `real` and
     /// whose metadata lives in `state`.
     pub fn open(dir: StoreDir, real: PathBuf, state: PathBuf) -> Result<Store> {
-        for d in [&real, &state.join("db"), &state.join("gcroots"), &state.join("log")] {
+        for d in [&real, &state.join("db"), &state.join("gcroots"), &state.join("log"), &state.join("realisations")] {
             fs::create_dir_all(d).map_err(io_err(format!("creating '{}'", d.display())))?;
         }
         let lock_path = state.join("gc.lock");
@@ -81,7 +87,7 @@ impl Store {
             .open(&lock_path)
             .map_err(io_err(format!("opening '{}'", lock_path.display())))?;
         flock(&lock, libc::LOCK_SH).map_err(io_err("locking the store"))?;
-        Ok(Store { dir, real, state, lock, subst: Default::default() })
+        Ok(Store { dir, real, state, lock, subst: Default::default(), drv_hashes: Mutex::new(HashMap::new()) })
     }
 
     /// A store where the logical and physical directories coincide; this is
@@ -367,6 +373,9 @@ impl Store {
                 fsutil::remove_all(&self.real_path(&p))?;
             }
             dead.push(p);
+        }
+        if !dry_run {
+            self.drop_realisations_of(&dead.iter().cloned().collect())?;
         }
         Ok((dead, freed))
     }
