@@ -61,7 +61,11 @@ pub fn now() -> u64 {
 
 /// `20231225143000`-style UTC timestamp, as in `lastModifiedDate`.
 pub fn format_date(t: u64) -> String {
-    let secs = t as i64;
+    format_date_signed(t as i64)
+}
+
+/// `format_date` for times that may lie before 1970.
+pub fn format_date_signed(secs: i64) -> String {
     let days = secs.div_euclid(86400);
     let rem = secs.rem_euclid(86400);
     // Civil-from-days (Howard Hinnant's algorithm).

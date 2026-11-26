@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use oxnix_core::StorePath;
 use oxnix_eval::eval::err;
-use oxnix_eval::flake::lockfile::{parse_input_path, print_input_path, Edge, LockFile, Node};
+use oxnix_eval::flake::lockfile::{parse_input_path, print_input_path, Edge, Node};
 use oxnix_eval::flake::{self, flakeref, FlakeRef, LockFlags, LockedFlake};
 use oxnix_eval::value::Sym;
 use oxnix_eval::{print, Eval, Options, Value, R};
@@ -242,8 +242,20 @@ fn realise_opt(ev: &Eval, cli: &Cli, drvs: &[(StorePath, String)], best_effort: 
     Ok(paths)
 }
 
-fn date(t: u64) -> String {
-    let d = oxnix_fetchers::format_date(t);
+fn date(t: u64, local: bool) -> String {
+    let secs = if local {
+        let tt = t as libc::time_t;
+        // SAFETY: localtime_r only writes the zero-initialised `tm` we pass.
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        if unsafe { libc::localtime_r(&tt, &mut tm) }.is_null() {
+            t as i64
+        } else {
+            t as i64 + tm.tm_gmtoff
+        }
+    } else {
+        t as i64
+    };
+    let d = oxnix_fetchers::format_date_signed(secs);
     format!("{}-{}-{} {}:{}:{}", &d[0..4], &d[4..6], &d[6..8], &d[8..10], &d[10..12], &d[12..14])
 }
 
@@ -252,7 +264,7 @@ fn flake_ref_arg(args: &[String]) -> Result<FlakeRef, String> {
     flakeref::parse(&s, Some(&crate::cwd()), false, true)
 }
 
-fn input_tree(lf: &LockFile, node: &Rc<Node>, prefix: &str, out: &mut String, visited: &mut Vec<*const Node>) {
+fn input_tree(node: &Rc<Node>, prefix: &str, out: &mut String, visited: &mut Vec<*const Node>) {
     let inputs = node.inputs.borrow().clone();
     let n = inputs.len();
     for (i, (k, e)) in inputs.iter().enumerate() {
@@ -261,19 +273,18 @@ fn input_tree(lf: &LockFile, node: &Rc<Node>, prefix: &str, out: &mut String, vi
         match e {
             Edge::Node(c) => {
                 let l = c.locked.as_ref().unwrap();
-                let seen = visited.contains(&Rc::as_ptr(c));
-                out.push_str(&format!(
-                    "{prefix}{branch}{k}: {}{}\n",
-                    l.locked.to_string(),
-                    if seen { " (…)" } else { "" }
-                ));
-                if !seen {
+                let lm = match l.locked.input.get_last_modified() {
+                    Ok(Some(t)) => format!(" ({})", date(t, false)),
+                    _ => String::new(),
+                };
+                out.push_str(&format!("{prefix}{branch}\x1b[1m{k}\x1b[0m: {}{lm}\n", l.locked.to_string()));
+                if !visited.contains(&Rc::as_ptr(c)) {
                     visited.push(Rc::as_ptr(c));
                     let p = format!("{prefix}{}", if last { "    " } else { "│   " });
-                    input_tree(lf, c, &p, out, visited);
+                    input_tree(c, &p, out, visited);
                 }
             }
-            Edge::Follows(f) => out.push_str(&format!("{prefix}{branch}{k} follows input '{}'\n", print_input_path(f))),
+            Edge::Follows(f) => out.push_str(&format!("{prefix}{branch}\x1b[1m{k}\x1b[0m follows input '{}'\n", print_input_path(f))),
         }
     }
 }
@@ -313,28 +324,37 @@ fn metadata(ev: &Eval, lf: &LockedFlake, json: bool) -> R<String> {
         return Ok(serde_json::Value::Object(j).to_string());
     }
     let mut s = String::new();
-    s.push_str(&format!("Resolved URL:  {}\n", f.resolved_ref.to_string()));
-    s.push_str(&format!("Locked URL:    {}\n", f.locked_ref.to_string()));
-    if let Some(d) = &f.description {
-        s.push_str(&format!("Description:   {d}\n"));
+    let mut field = |label: &str, v: String| {
+        s.push_str(&format!("\x1b[1m{label}:\x1b[0m{}{v}\n", " ".repeat(15 - label.len() - 1)));
+    };
+    field("Resolved URL", f.resolved_ref.to_string());
+    if input.is_locked() {
+        field("Locked URL", f.locked_ref.to_string());
     }
-    s.push_str(&format!("Path:          {path}\n"));
+    if let Some(d) = &f.description {
+        field("Description", d.clone());
+    }
+    field("Path", path);
     if let Ok(Some(r)) = input.get_rev() {
-        s.push_str(&format!("Revision:      {r}\n"));
+        field("Revision", r);
     }
     if let Ok(Some(d)) = oxnix_fetchers::attrs::get_str(&input.attrs, "dirtyRev") {
-        s.push_str(&format!("Revision:      {d}\n"));
+        field("Revision", d);
     }
     if let Ok(Some(n)) = input.get_rev_count() {
-        s.push_str(&format!("Revisions:     {n}\n"));
+        field("Revisions", n.to_string());
     }
     if let Ok(Some(n)) = input.get_last_modified() {
-        s.push_str(&format!("Last modified: {}\n", date(n)));
+        field("Last modified", date(n, true));
     }
-    if !lf.lock_file.root.inputs.borrow().is_empty() {
-        s.push_str("Inputs:\n");
-        input_tree(&lf.lock_file, &lf.lock_file.root, "", &mut s, &mut Vec::new());
+    if let Some(fp) = lf.fingerprint(&ev.store) {
+        field("Fingerprint", fp);
     }
+    let root = &lf.lock_file.root;
+    if !root.inputs.borrow().is_empty() {
+        s.push_str("\x1b[1mInputs:\x1b[0m\n");
+    }
+    input_tree(root, "", &mut s, &mut vec![Rc::as_ptr(root)]);
     Ok(s.trim_end().to_string())
 }
 

@@ -361,6 +361,7 @@ name = "oxnix"
 version = "0.1.0"
 dependencies = [
  "dhat",
+ "libc",
  "mimalloc",
  "oxnix-core",
  "oxnix-daemon",
