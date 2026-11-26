@@ -4,13 +4,15 @@
 Checks that drvPaths, `show-derivation` and the output paths and
 realisations of a build match `nix build` in a scratch store at the same
 location, that changing a CA dependency without changing its output reuses
-the realisation of its dependent, and that impure derivations rebuild.
+the realisation of its dependent (with the same build and resolution
+messages as Nix), and that impure derivations rebuild.
 Needs Nix 2.24; nothing outside a temporary directory is changed.
 """
 
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -25,11 +27,21 @@ system = {"arm64": "aarch64", "x86_64": "x86_64"}.get(platform.machine(), platfo
 failures = []
 
 
-def run(cmd, env=None):
+def run(cmd, env=None, stderr=False):
     p = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if p.returncode != 0:
         sys.exit(f"command failed: {' '.join(cmd)}\n{p.stderr}")
-    return p.stdout.strip()
+    return (p.stdout.strip(), p.stderr) if stderr else p.stdout.strip()
+
+
+def progress(stderr):
+    """The build and resolution messages, without Nix's trailing `...` and
+    oxnix's `(n/total)` counter."""
+    out = []
+    for line in stderr.splitlines():
+        if line.startswith("building '") or line.startswith("resolved derivation: "):
+            out.append(re.sub(r"(\.\.\.| \(\d+/\d+\))$", "", line))
+    return sorted(out)
 
 
 def check(what, want, got):
@@ -77,6 +89,8 @@ def main():
         want_paths = run(nix_build + built, nix_env).split("\n")
         info = ["realisation", "info", "--json"]
         want_real = json.loads(run(["nix"] + info + ["--store", nix_store, "-f", os.path.join(here, "ca.nix")] + args + ["b", "c"], nix_env))
+        # The raw format reports resolutions the way `nix-build` does.
+        _, want_msgs = run(nix_build + ["--log-format", "raw", "--argstr", "salt", "1", "c"], nix_env, stderr=True)
         rmtree(store)
         os.remove(log)
         got_paths = []
@@ -93,8 +107,9 @@ def main():
         # Early cutoff: a salted `a` builds to the same path, so `b` is not
         # rebuilt and `c` keeps its path.
         c_out = [p for p in got_paths if p.endswith("-c")][0]
-        salted = run(ox + ["--store", store, "build", os.path.join(here, "ca.nix"), "-A", "c", "--no-link", "--argstr", "salt", "1"] + args, ox_env)
+        salted, got_msgs = run(ox + ["--store", store, "build", os.path.join(here, "ca.nix"), "-A", "c", "--no-link", "--argstr", "salt", "1"] + args, ox_env, stderr=True)
         check("output of c after changing a", c_out, salted)
+        check("messages after changing a", progress(want_msgs), progress(got_msgs))
         check("builds of b", 1, open(log).read().count("b"))
 
         # Impure derivations build anew every time.

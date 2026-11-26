@@ -41,7 +41,8 @@ impl Store {
     }
 
     /// Builds the resolved form of `drv` (unless its outputs are already
-    /// known) and records realisations of `drv`'s own outputs.
+    /// known) and records realisations of `drv`'s own outputs. Reports the
+    /// resolution like Nix, and the build only if a builder runs.
     pub(crate) fn build_resolved(
         &self,
         drv_path: &StorePath,
@@ -49,6 +50,7 @@ impl Store {
         all: &HashMap<StorePath, Derivation>,
         opts: &BuildOptions,
         built: &Built,
+        progress: &str,
     ) -> Result<BTreeMap<String, StorePath>> {
         let mut input_paths = BTreeMap::new();
         let mut input_realisations = Vec::new();
@@ -82,8 +84,9 @@ impl Store {
         let resolved = drv.resolve(&self.dir, &input_paths)?;
         let text = resolved.to_aterm(&self.dir);
         let resolved_path = self.add_text(&format!("{}.drv", drv.name), text.as_bytes(), &resolved.references())?;
+        eprintln!("resolved derivation: '{}' -> '{}'", self.dir.print(drv_path), self.dir.print(&resolved_path));
         let outputs = if self.missing_outputs(&resolved)? {
-            self.build_derivation(&resolved_path, &resolved, all, opts, "")?
+            self.build_derivation(&resolved_path, &resolved, all, opts, progress)?
         } else {
             self.output_paths(&resolved_path, &resolved)?
         };

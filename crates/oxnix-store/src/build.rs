@@ -486,7 +486,7 @@ impl Store {
         built: &Built,
     ) -> Result<()> {
         let outputs = if needs_resolution(drv) {
-            self.build_resolved(drv_path, drv, all, opts, built)?
+            self.build_resolved(drv_path, drv, all, opts, built, progress)?
         } else {
             self.build_derivation(drv_path, drv, all, opts, progress)?
         };
@@ -495,7 +495,7 @@ impl Store {
     }
 
     /// Runs the builder of `drv` and registers its outputs. Returns the
-    /// output paths.
+    /// output paths. `progress` follows the build message.
     pub(crate) fn build_derivation(
         &self,
         drv_path: &StorePath,
