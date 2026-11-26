@@ -49,9 +49,6 @@ pub struct Daemon {
     /// Held shared by operations that add paths and exclusively by the
     /// collector, so new paths are rooted before a collection can see them.
     gc: RwLock<()>,
-    /// Serialises builds: two clients building the same derivation must not
-    /// run its builder twice into the same output paths.
-    building: Mutex<()>,
     next_id: AtomicU64,
 }
 
@@ -137,7 +134,8 @@ type W = BufWriter<Box<dyn Write + Send>>;
 struct Conn<'d> {
     d: &'d Daemon,
     r: R,
-    w: W,
+    /// Shared with the threads of running builds, which send log messages.
+    w: Arc<Mutex<W>>,
     version: u64,
     trusted: bool,
     id: u64,
@@ -171,7 +169,6 @@ impl Daemon {
             config,
             temp_roots: Mutex::new(HashMap::new()),
             gc: RwLock::new(()),
-            building: Mutex::new(()),
             next_id: AtomicU64::new(1),
         }
     }
@@ -225,7 +222,7 @@ impl Daemon {
         let mut c = Conn {
             d: self,
             r: BufReader::with_capacity(1 << 16, r),
-            w: BufWriter::with_capacity(1 << 16, w),
+            w: Arc::new(Mutex::new(BufWriter::with_capacity(1 << 16, w))),
             version: 0,
             trusted,
             id,
@@ -262,9 +259,11 @@ impl Conn<'_> {
         if self.r.read_u64()? != proto::WORKER_MAGIC_1 {
             return Err(bad("protocol mismatch"));
         }
-        self.w.write_u64(proto::WORKER_MAGIC_2)?;
-        self.w.write_u64(proto::PROTOCOL_VERSION)?;
-        self.w.flush()?;
+        let w = Arc::clone(&self.w);
+        let mut w = w.lock().unwrap();
+        w.write_u64(proto::WORKER_MAGIC_2)?;
+        w.write_u64(proto::PROTOCOL_VERSION)?;
+        w.flush()?;
         let client = self.r.read_u64()?;
         if client >> 8 != 1 || client < proto::MIN_CLIENT_VERSION {
             return Err(bad(format!("unsupported client protocol version {}.{}", client >> 8, minor(client))));
@@ -277,13 +276,14 @@ impl Conn<'_> {
             self.r.read_u64()?; // obsolete reserveSpace
         }
         if minor(self.version) >= 33 {
-            self.w.write_str(proto::NIX_VERSION)?;
+            w.write_str(proto::NIX_VERSION)?;
         }
         if minor(self.version) >= 35 {
-            self.w.write_u64(if self.trusted { 1 } else { 2 })?;
+            w.write_u64(if self.trusted { 1 } else { 2 })?;
         }
-        self.w.write_u64(proto::STDERR_LAST)?;
-        self.w.flush()?;
+        w.write_u64(proto::STDERR_LAST)?;
+        w.flush()?;
+        drop(w);
 
         loop {
             let op = match self.r.read_u64() {
@@ -296,14 +296,15 @@ impl Conn<'_> {
             };
             let res = self.op(op)?;
             let sd = self.sd();
+            let mut w = self.w.lock().unwrap();
             match res {
                 Ok(f) => {
-                    self.w.write_u64(proto::STDERR_LAST)?;
-                    f(&mut self.w, &sd, self.version)?;
+                    w.write_u64(proto::STDERR_LAST)?;
+                    f(&mut w, &sd, self.version)?;
                 }
-                Err(e) => proto::write_error(&mut self.w, &e, self.version)?,
+                Err(e) => proto::write_error(&mut *w, &e, self.version)?,
             }
-            self.w.flush()?;
+            w.flush()?;
         }
     }
 
@@ -619,9 +620,16 @@ impl Conn<'_> {
     }
 
     fn log(&mut self, msg: &str) -> io::Result<()> {
-        self.w.write_u64(proto::STDERR_NEXT)?;
-        self.w.write_str(&format!("{msg}\n"))?;
-        self.w.flush()
+        let mut w = self.w.lock().unwrap();
+        w.write_u64(proto::STDERR_NEXT)?;
+        w.write_str(&format!("{msg}\n"))?;
+        w.flush()
+    }
+
+    /// The client's build options, with build output sent to the client.
+    fn build_opts(&self) -> BuildOptions {
+        let logger = ClientLogger { w: Arc::clone(&self.w), version: self.version };
+        BuildOptions { logger: Some(Arc::new(logger)), ..self.opts.clone() }
     }
 
     fn referrers(&self, p: &StorePath) -> Result<BTreeSet<StorePath>> {
@@ -810,8 +818,7 @@ impl Conn<'_> {
 
     fn realise(&self, drvs: &[StorePath]) -> Result<BTreeMap<StorePath, BTreeMap<String, StorePath>>> {
         let _g = self.d.gc.read().unwrap();
-        let _b = self.d.building.lock().unwrap();
-        let res = self.store().realise(drvs, &self.opts)?;
+        let res = self.store().realise(drvs, &self.build_opts())?;
         for outs in res.values() {
             for p in outs.values() {
                 self.add_temp_root(p);
@@ -876,29 +883,12 @@ impl Conn<'_> {
         if !self.trusted && !drv.is_fixed_output() {
             return Err("you are not privileged to build input-addressed derivations".into());
         }
-        let s = self.store();
-        let valid = |d: &Derivation| d.outputs.values().all(|o| o.path.as_ref().is_some_and(|p| s.is_valid(p)));
-        let start = now();
-        let mut res = if valid(drv) {
-            BuildResult::new(BuildStatus::AlreadyValid)
-        } else {
+        let res = {
             let _g = self.d.gc.read().unwrap();
-            let _b = self.d.building.lock().unwrap();
-            match s.build_basic(drv_path, drv, &self.opts) {
-                Ok(()) => BuildResult { times_built: 1, ..BuildResult::new(BuildStatus::Built) },
-                Err(e) => BuildResult { status: BuildStatus::PermanentFailure, ..BuildResult::failure(e) },
-            }
+            build_basic_result(self.store(), drv_path, drv, &self.build_opts())
         };
-        res.start_time = start;
-        res.stop_time = now();
-        if res.status.success() {
-            let h = drv.hash_modulo(&s.dir, true, &mut |p| drv_hash(s, p, &mut HashMap::new()))?;
-            for (n, o) in &drv.outputs {
-                if let Some(p) = &o.path {
-                    self.add_temp_root(p);
-                    res.built_outputs.insert(n.clone(), Realisation { id: format!("sha256:{}!{n}", h.to_base16()), out_path: p.clone() });
-                }
-            }
+        for r in res.built_outputs.values() {
+            self.add_temp_root(&r.out_path);
         }
         Ok(res)
     }
@@ -937,6 +927,91 @@ impl Conn<'_> {
     }
 }
 
+/// Sends build activity to a client as Nix does: an activity of type
+/// `actBuild` per build with one `resBuildLogLine` result per output line.
+/// Clients older than protocol 1.20 get plain `STDERR_NEXT` lines.
+struct ClientLogger {
+    w: Arc<Mutex<W>>,
+    version: u64,
+}
+
+impl std::fmt::Debug for ClientLogger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ClientLogger")
+    }
+}
+
+const ACT_BUILD: u64 = 105;
+const LVL_INFO: u64 = 3;
+
+impl ClientLogger {
+    /// A client that went away fails its request on the next reply, so
+    /// errors from log messages are left to that.
+    fn send(&self, f: impl FnOnce(&mut W) -> io::Result<()>) {
+        let mut w = self.w.lock().unwrap();
+        let _ = f(&mut w).and_then(|()| w.flush());
+    }
+
+    fn activities(&self) -> bool {
+        minor(self.version) >= 20
+    }
+}
+
+impl oxnix_store::build::BuildLogger for ClientLogger {
+    fn start(&self, id: u64, drv_path: &str, text: &str) {
+        if !self.activities() {
+            return self.send(|w| {
+                w.write_u64(proto::STDERR_NEXT)?;
+                w.write_str(&format!("{text}\n"))
+            });
+        }
+        self.send(|w| {
+            w.write_u64(proto::STDERR_START_ACTIVITY)?;
+            w.write_u64(id)?;
+            w.write_u64(LVL_INFO)?;
+            w.write_u64(ACT_BUILD)?;
+            w.write_str(text)?;
+            // Fields of actBuild: derivation, machine, round, total rounds.
+            w.write_u64(4)?;
+            w.write_u64(1)?;
+            w.write_str(drv_path)?;
+            w.write_u64(1)?;
+            w.write_str("")?;
+            for _ in 0..2 {
+                w.write_u64(0)?;
+                w.write_u64(1)?;
+            }
+            w.write_u64(0) // parent
+        })
+    }
+
+    fn line(&self, id: u64, line: &str) {
+        if !self.activities() {
+            return self.send(|w| {
+                w.write_u64(proto::STDERR_NEXT)?;
+                w.write_str(&format!("{line}\n"))
+            });
+        }
+        self.send(|w| {
+            w.write_u64(proto::STDERR_RESULT)?;
+            w.write_u64(id)?;
+            w.write_u64(proto::RES_BUILD_LOG_LINE)?;
+            w.write_u64(1)?;
+            w.write_u64(1)?;
+            w.write_str(line)
+        })
+    }
+
+    fn stop(&self, id: u64) {
+        if self.activities() {
+            self.send(|w| {
+                w.write_u64(proto::STDERR_STOP_ACTIVITY)?;
+                w.write_u64(id)
+            });
+        }
+    }
+}
+
 /// The parts of a connection that importing needs, borrowed apart from its
 /// reader (which supplies the data).
 struct ImportCtx<'d> {
@@ -966,6 +1041,38 @@ impl ImportCtx<'_> {
         }
         Ok(())
     }
+}
+
+/// Builds a derivation sent with `BuildDerivation` and describes the
+/// outcome as a `BuildResult`.
+pub fn build_basic_result(s: &Store, drv_path: &StorePath, drv: &Derivation, opts: &BuildOptions) -> BuildResult {
+    let valid = drv.outputs.values().all(|o| o.path.as_ref().is_some_and(|p| s.is_valid(p)));
+    let start = now();
+    let mut res = if valid {
+        BuildResult::new(BuildStatus::AlreadyValid)
+    } else {
+        match s.build_basic(drv_path, drv, opts) {
+            Ok(()) => BuildResult { times_built: 1, ..BuildResult::new(BuildStatus::Built) },
+            Err(e) => BuildResult { status: BuildStatus::PermanentFailure, ..BuildResult::failure(e) },
+        }
+    };
+    res.start_time = start;
+    res.stop_time = now();
+    if res.status.success() {
+        // Input derivations are not part of a basic derivation, so its hash
+        // needs no lookups.
+        let h = drv.hash_modulo(&s.dir, true, &mut |p| Err(format!("unexpected input derivation '{p}'")));
+        let id = |n: &str| match &h {
+            Ok(h) => format!("sha256:{}!{n}", h.to_base16()),
+            Err(_) => format!("!{n}"),
+        };
+        for (n, o) in &drv.outputs {
+            if let Some(p) = &o.path {
+                res.built_outputs.insert(n.clone(), Realisation { id: id(n), out_path: p.clone() });
+            }
+        }
+    }
+    res
 }
 
 fn now() -> u64 {

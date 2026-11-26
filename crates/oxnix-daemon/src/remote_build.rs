@@ -178,7 +178,9 @@ fn build_on(m: &Machine, store: &Store, drv_path: &StorePath, drv: &Derivation, 
     log.info(&format!("building '{}' on '{}'", sd.print(drv_path), m.uri));
     let mut conn = Connection::open(&uri).map_err(fail)?;
     conn.sd = sd.clone();
-    conn.log = LogOptions { build_logs: opts.print_logs, prefix: format!("{}> ", drv.name) };
+    // The remote build's output becomes this build's output.
+    let sink_log = log.clone();
+    conn.log = LogOptions { build_logs: true, prefix: String::new(), sink: Some(std::sync::Arc::new(move |l: &str| sink_log.line(l))) };
     let copts = ClientOptions { keep_failed: opts.keep_failed, verbose_build: opts.print_logs, max_jobs: 1, cores: opts.cores as u64, ..Default::default() };
     conn.set_options(&copts).map_err(fail)?;
 

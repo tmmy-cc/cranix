@@ -6,6 +6,7 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 
 use oxnix_core::{Derivation, StoreDir, StorePath};
 use oxnix_store::PathInfo;
@@ -96,13 +97,19 @@ impl std::fmt::Display for StoreUri {
     }
 }
 
+/// Receives log output from the remote side.
+pub type LogSink = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// How log output from the daemon is shown.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct LogOptions {
     /// Print build output lines (`-L`).
     pub build_logs: bool,
     /// Prefix for every printed line, e.g. the remote machine's name.
     pub prefix: String,
+    /// Takes build output and messages in place of stderr, e.g. to pass a
+    /// remote build's log on to the local build's log.
+    pub sink: Option<LogSink>,
 }
 
 pub struct Connection {
@@ -575,7 +582,10 @@ fn process_stderr(r: &mut (impl Read + ?Sized), version: u64, log: &LogOptions) 
     let e = ioe("reading from the daemon");
     let print = |s: &str| {
         let s = s.strip_suffix('\n').unwrap_or(s);
-        eprintln!("{}{s}", log.prefix);
+        match &log.sink {
+            Some(f) => f(s),
+            None => eprintln!("{}{s}", log.prefix),
+        }
     };
     loop {
         match r.read_u64().map_err(&e)? {
@@ -589,7 +599,7 @@ fn process_stderr(r: &mut (impl Read + ?Sized), version: u64, log: &LogOptions) 
                 let text = r.read_string().map_err(&e)?;
                 proto::read_fields(r).map_err(&e)?;
                 let _parent = r.read_u64().map_err(&e)?;
-                if level <= 3 && !text.is_empty() {
+                if level <= 3 && !text.is_empty() && log.sink.is_none() {
                     print(&text);
                 }
             }
@@ -600,7 +610,7 @@ fn process_stderr(r: &mut (impl Read + ?Sized), version: u64, log: &LogOptions) 
                 let _id = r.read_u64().map_err(&e)?;
                 let ty = r.read_u64().map_err(&e)?;
                 let fields = proto::read_fields(r).map_err(&e)?;
-                if ty == proto::RES_BUILD_LOG_LINE && log.build_logs {
+                if ty == proto::RES_BUILD_LOG_LINE && (log.build_logs || log.sink.is_some()) {
                     if let Some(Field::Str(s)) = fields.first() {
                         print(s);
                     }

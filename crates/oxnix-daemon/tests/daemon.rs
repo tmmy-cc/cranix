@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use oxnix_core::{nar, Derivation, Output, StoreDir, StorePath};
 use oxnix_daemon::client::Connection;
+use oxnix_daemon::proto::DerivedPath;
 use oxnix_daemon::machines;
 use oxnix_daemon::remote_build::RemoteBuilders;
 use oxnix_daemon::server::{Daemon, DaemonConfig};
@@ -129,6 +130,12 @@ fn untrusted_clients_need_content_addresses() {
 }
 
 fn write_drv(store: &Store, name: &str, script: &str, inputs: &[(StorePath, &str)]) -> StorePath {
+    write_drv_env(store, name, script, inputs, &[])
+}
+
+/// Writes a `/bin/sh -c script` derivation; the outputs of the inputs are
+/// in `$dep`, `$dep1`, `$dep2`, ….
+fn write_drv_env(store: &Store, name: &str, script: &str, inputs: &[(StorePath, &str)], env: &[(&str, &str)]) -> StorePath {
     let sd = store.dir.clone();
     let mut d = Derivation {
         name: name.into(),
@@ -138,10 +145,15 @@ fn write_drv(store: &Store, name: &str, script: &str, inputs: &[(StorePath, &str
         ..Default::default()
     };
     d.outputs.insert("out".into(), Output::default());
-    for (p, o) in inputs {
+    d.env.insert("name".into(), name.into());
+    for (i, (p, o)) in inputs.iter().enumerate() {
         d.input_drvs.entry(p.clone()).or_default().insert(o.to_string());
         let dep = store.read_derivation(p).unwrap();
-        d.env.insert("dep".into(), sd.print(dep.outputs["out"].path.as_ref().unwrap()));
+        let var = if i == 0 { "dep".to_string() } else { format!("dep{i}") };
+        d.env.insert(var, sd.print(dep.outputs["out"].path.as_ref().unwrap()));
+    }
+    for (k, v) in env {
+        d.env.insert(k.to_string(), v.to_string());
     }
     let mut hashes = std::collections::HashMap::new();
     d.fill_output_paths(&sd, &mut |p| oxnix_daemon::server::drv_hash(store, p, &mut hashes)).unwrap();
@@ -197,4 +209,40 @@ fn remote_build_through_oxnix_daemon() {
     let e = local.realise(&[other], &opts).unwrap_err();
     assert!(e.contains("max-jobs = 0"), "{e}");
     let _ = std::fs::remove_file(&sock);
+}
+
+#[test]
+fn concurrent_clients_build_shared_derivations_once() {
+    let root = scratch("concurrent");
+    let store = Store::open_at(&root.join("s")).unwrap();
+    let counter = root.join("builds");
+    let c = counter.to_string_lossy().into_owned();
+    let script = "echo $name >> $counter; /bin/sleep 0.3; echo $name > $out";
+    let env = [("counter", c.as_str())];
+    let leaf = write_drv_env(&store, "leaf", script, &[], &env);
+    let a = write_drv_env(&store, "a", script, &[(leaf.clone(), "out")], &env);
+    let b = write_drv_env(&store, "b", script, &[(leaf.clone(), "out")], &env);
+    let top = write_drv_env(&store, "top", script, &[(a.clone(), "out"), (b.clone(), "out")], &env);
+    let daemon = Arc::new(Daemon::new(store, DaemonConfig::default()));
+
+    let requests = [vec![a.clone()], vec![b.clone()], vec![top.clone()], vec![top.clone(), a.clone()], vec![leaf.clone()]];
+    let handles: Vec<_> = requests
+        .into_iter()
+        .map(|drvs| {
+            let mut c = connect(&daemon, true);
+            std::thread::spawn(move || {
+                let targets: Vec<DerivedPath> = drvs.iter().map(|d| DerivedPath::Built { drv: d.clone(), outputs: None }).collect();
+                c.build_paths_with_results(&targets).unwrap()
+            })
+        })
+        .collect();
+    for h in handles {
+        for (t, res) in h.join().unwrap() {
+            assert!(res.status.success(), "{t:?}: {}", res.error_msg);
+            assert_eq!(res.built_outputs.len(), 1);
+        }
+    }
+    let mut built: Vec<String> = std::fs::read_to_string(&counter).unwrap().lines().map(String::from).collect();
+    built.sort();
+    assert_eq!(built, ["a", "b", "leaf", "top"], "every derivation is built exactly once");
 }
