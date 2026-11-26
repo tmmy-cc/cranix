@@ -566,6 +566,11 @@ pub static PRIMOPS: &[PrimOp] = &[
         let p = ev.coerce_to_path(&a[0], &mut ctx)?;
         let (sp, _) = ev.store.dir.to_store_path(&p).ok_or(()).or_else(|_| err(format!("path '{p}' is not in the Nix store")))?;
         let s = ev.store.dir.print(&sp);
+        // Like Nix, fetch the path from a substituter when it is missing;
+        // paths in the host's store at the same location count as present.
+        if !ev.store.is_valid(&sp) && !ev.store.resolve(&s).exists() {
+            ev.store.ensure_path(&sp).or_else(err)?;
+        }
         ctx.insert(CtxElem::Opaque(s.clone()));
         Ok(Value::str_ctx(s, ctx))
     }),
