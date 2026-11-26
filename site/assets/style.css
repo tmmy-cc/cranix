@@ -842,11 +842,6 @@ h3 {
     color: var(--color-on-ink);
 }
 
-.status-review {
-    background: var(--color-accent-soft);
-    color: var(--color-ink);
-}
-
 .status-planned {
     border: 1px dashed var(--color-muted);
     color: var(--color-muted);

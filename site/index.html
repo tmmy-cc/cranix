@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>cranix: the Nix package manager, rebuilt in Rust with the EU CRA in mind</title>
-    <meta name="description" content="cranix is a from-scratch Rust implementation of the Nix package manager, bit-compatible with Nix 2.24, with less memory and tooling for the EU Cyber Resilience Act.">
+    <meta name="description" content="cranix is a from-scratch Rust implementation of the Nix package manager, bit-compatible with Nix 2.24, using less memory and built with the EU Cyber Resilience Act in mind.">
     <meta name="theme-color" content="#f7f6f2" media="(prefers-color-scheme: light)">
     <meta name="theme-color" content="#121315" media="(prefers-color-scheme: dark)">
     <meta property="og:type" content="website">
@@ -155,7 +155,7 @@
                         <span class="stat-label">to evaluate <code>hello.drvPath</code>, on par with Nix at 0.29&#8202;s</span>
                     </li>
                     <li class="stat reveal">
-                        <span class="stat-value">~110</span>
+                        <span class="stat-value">~115</span>
                         <span class="stat-label">builtins, checked against Nix by a differential test suite</span>
                     </li>
                 </ul>
@@ -202,7 +202,7 @@
                     </article>
                     <article class="design-card reveal">
                         <h3>Builder</h3>
-                        <p>A ready-queue scheduler over a thread pool builds the derivation graph in parallel. Builders get Nix’s environment, structured attributes and <code>passAsFile</code>; outputs are scanned for references and fixed-output hashes are verified.</p>
+                        <p>A ready-queue scheduler over a thread pool builds the derivation graph in parallel, after fetching what it can from signed binary caches. Builders run sandboxed with Nix’s environment, or on remote machines; outputs are scanned for references and fixed-output hashes are verified.</p>
                     </article>
                 </div>
             </div>
@@ -213,7 +213,7 @@
                 <div class="section-header reveal">
                     <p class="section-kicker">Features</p>
                     <h2 id="features-title">From the language to the supply chain</h2>
-                    <p>The core is on the main branch. The next set of features is in review, and the supply-chain tooling is planned.</p>
+                    <p>Everything marked available is on the main branch and checked against Nix by its test suites. The supply-chain tooling comes next.</p>
                 </div>
 
                 <div class="feature-groups">
@@ -233,14 +233,8 @@
                             <li class="feature reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 21 8l-9 5-9-5zM3 12l9 5 9-5M3 16l9 5 9-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M12 3 21 8l-9 5-9-5z" fill="currentColor" opacity="0.5"/></svg>
                                 <h3>Parallel builder</h3>
-                                <p>Builds whole derivation graphs with <code>-j</code> jobs, multiple outputs, fixed-output derivations and per-derivation logs.</p>
+                                <p>Builds whole derivation graphs with <code>-j</code> jobs, multiple outputs, fixed-output derivations, time limits and per-derivation logs.</p>
                             </li>
-                        </ul>
-                    </div>
-
-                    <div>
-                        <h3 class="feature-group-title reveal"><span class="status status-review">In review</span></h3>
-                        <ul class="features" data-stagger>
                             <li class="feature reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 19 6v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="m9 12 2 2 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                                 <h3>Sandboxed builds</h3>
@@ -249,12 +243,12 @@
                             <li class="feature reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 18h10a4 4 0 0 0 .6-8A6 6 0 0 0 6 11a3.5 3.5 0 0 0 1 7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M12 10v5m-2.5-2.5L12 15l2.5-2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                                 <h3>Binary caches</h3>
-                                <p>Substitution from HTTP caches with signed <code>.narinfo</code> files, <code>copy</code> between stores and signing keys.</p>
+                                <p>Substitution from <code>file://</code> and HTTP caches with signed <code>.narinfo</code> files, <code>copy</code> to caches Nix reads, and signing keys.</p>
                             </li>
                             <li class="feature reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 4h8v6H3zM13 14h8v6h-8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M7 10v4h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                                 <h3>Daemon and remote builders</h3>
-                                <p>The Nix daemon protocol for multi-user installs, and builds handed off to other machines over SSH.</p>
+                                <p>The Nix daemon protocol in both directions: Nix clients can use a cranix store, and cranix can use a Nix daemon. Builds go to other machines over <code>ssh-ng://</code> or <code>ssh://</code>.</p>
                             </li>
                             <li class="feature reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 3h9l4 4v14H6zM14 3v5h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M9 13h6M9 17h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -264,7 +258,7 @@
                             <li class="feature reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4 7 20M17 4l-2 16M4 9h16M3 15h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle class="accent" cx="12" cy="12" r="2" fill="currentColor"/></svg>
                                 <h3>Content-addressed derivations</h3>
-                                <p>Outputs addressed by what they contain instead of how they were built, with realisations recorded in the store.</p>
+                                <p>Outputs addressed by what they contain, and impure derivations, with realisations recorded in the store and the same paths as Nix.</p>
                             </li>
                             <li class="feature reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 5h16v11H9l-5 4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M12 8v3.5M12 13.5v.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -296,6 +290,11 @@
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 18h10a4 4 0 0 0 .6-8A6 6 0 0 0 6 11a3.5 3.5 0 0 0 1 7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M12 16v-5m-2.5 2.5L12 11l2.5 2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                                 <h3>Registry caches and upload while building</h3>
                                 <p>Binary caches in GitLab and GitHub package registries, filled as each output is finished instead of after the whole build.</p>
+                            </li>
+                            <li class="feature feature-planned reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M13 3 5 13h6l-1 8 8-10h-6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M13 3 5 13h6z" fill="currentColor" opacity="0.5"/></svg>
+                                <h3>Faster repeated evaluation</h3>
+                                <p>Compiled Nix files and flake evaluation results cached on disk, so evaluating the same package set again skips most of the work.</p>
                             </li>
                         </ul>
                     </div>
@@ -374,7 +373,7 @@
                     <li class="step reveal">
                         <h3 class="step-title">Evaluate a package</h3>
                         <div class="code-block">
-                            <pre id="code-eval"><span class="prompt" aria-hidden="true">$ </span><span data-command>target/release/cranix eval --expr '(import &lt;nixpkgs&gt; {}).hello.drvPath' -I nixpkgs=/path/to/nixpkgs</span>
+                            <pre id="code-eval"><span class="prompt" aria-hidden="true">$ </span><span data-command>target/release/cranix eval nixpkgs#hello.drvPath</span>
 <span class="comment">"/nix/store/…-hello-2.12.1.drv"</span></pre>
                             <button class="copy-button" type="button" data-copy-target="code-eval" hidden>Copy</button>
                         </div>
@@ -387,7 +386,7 @@
                         </div>
                     </li>
                 </ol>
-                <p class="commands reveal">Commands: <code>eval</code>, <code>instantiate</code>, <code>build</code>, <code>show-derivation</code>, <code>hash</code>, <code>nar dump|<wbr>restore</code> and <code>store add|<wbr>path-info|<wbr>closure|<wbr>ls|<wbr>verify|<wbr>gc</code>. Global options include <code>--store</code>, <code>-I</code>, <code>--arg</code>, <code>--argstr</code>, <code>--system</code> and <code>--pure</code>.</p>
+                <p class="commands reveal">Commands: <code>eval</code>, <code>instantiate</code>, <code>build</code>, <code>run</code>, <code>shell</code>, <code>develop</code>, <code>flake metadata|<wbr>show|<wbr>lock|<wbr>update|<wbr>check|<wbr>init|<wbr>new</code>, <code>copy</code>, <code>daemon</code>, <code>show-derivation</code>, <code>realisation info</code>, <code>hash</code>, <code>key</code>, <code>nar dump|<wbr>restore</code> and <code>store add|<wbr>path-info|<wbr>sign|<wbr>closure|<wbr>ls|<wbr>verify|<wbr>gc|<wbr>serve</code>. Global options include <code>--store</code>, <code>--builders</code>, <code>--option</code>, <code>--show-trace</code>, <code>-I</code>, <code>--arg</code>, <code>--argstr</code>, <code>--system</code> and <code>--pure</code>.</p>
             </div>
         </section>
 
@@ -395,8 +394,8 @@
             <div class="container">
                 <div class="cta reveal">
                     <div class="cta-crown" aria-hidden="true"></div>
-                    <h2 id="cta-title">Read the code. It is small.</h2>
-                    <p>The crates are small enough to read in an afternoon, and the test suite pins their behaviour to Nix’s output. Issues and pull requests are welcome.</p>
+                    <h2 id="cta-title">Read the code, run the tests.</h2>
+                    <p>Each crate does one job, from hashing and NAR files to the daemon, and the test suites pin their behaviour to Nix’s output. Issues and pull requests are welcome.</p>
                     <div class="hero-actions">
                         <a class="button button-primary" href="https://github.com/tmmy-cc/cranix">github.com/tmmy-cc/cranix</a>
                         <a class="button button-secondary" href="https://github.com/tmmy-cc/cranix/blob/main/docs/comparison.md">Compare with Nix, Lix and Snix</a>
