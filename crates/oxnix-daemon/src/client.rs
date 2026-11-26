@@ -18,7 +18,8 @@ pub type Result<T> = std::result::Result<T, String>;
 
 pub const DEFAULT_SOCKET: &str = "/nix/var/nix/daemon-socket/socket";
 
-/// A parsed store URI: `daemon`, `unix:///path` or `ssh-ng://[user@]host`,
+/// A parsed store URI: `daemon`, `unix:///path`, `ssh-ng://[user@]host` or
+/// `ssh://[user@]host` (the `nix-store --serve` protocol),
 /// each with optional `?key=value&…` parameters (e.g. `store=/nix/store`,
 /// `remote-program=…`, `remote-store=…`, `ssh-key=…`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,6 +32,8 @@ pub struct StoreUri {
 pub enum UriKind {
     Unix(PathBuf),
     SshNg { host: String, port: Option<u16> },
+    /// The legacy `ssh://` store, spoken with `nix-store --serve`.
+    Ssh { host: String, port: Option<u16> },
 }
 
 fn percent_decode(s: &str) -> String {
@@ -66,7 +69,7 @@ impl StoreUri {
             UriKind::Unix(PathBuf::from(sock))
         } else if let Some(p) = base.strip_prefix("unix://") {
             UriKind::Unix(PathBuf::from(percent_decode(p)))
-        } else if let Some(h) = base.strip_prefix("ssh-ng://") {
+        } else if let Some((legacy, h)) = base.strip_prefix("ssh-ng://").map(|h| (false, h)).or(base.strip_prefix("ssh://").map(|h| (true, h))) {
             let h = h.trim_end_matches('/');
             let (host, port) = match h.rsplit_once(':').map(|(host, p)| (host, p.parse::<u16>())) {
                 Some((host, Ok(port))) => (host.to_string(), Some(port)),
@@ -75,7 +78,11 @@ impl StoreUri {
             if host.is_empty() {
                 return None;
             }
-            UriKind::SshNg { host, port }
+            if legacy {
+                UriKind::Ssh { host, port }
+            } else {
+                UriKind::SshNg { host, port }
+            }
         } else {
             return None;
         };
@@ -93,6 +100,8 @@ impl std::fmt::Display for StoreUri {
             UriKind::Unix(p) => write!(f, "unix://{}", p.display()),
             UriKind::SshNg { host, port: None } => write!(f, "ssh-ng://{host}"),
             UriKind::SshNg { host, port: Some(p) } => write!(f, "ssh-ng://{host}:{p}"),
+            UriKind::Ssh { host, port: None } => write!(f, "ssh://{host}"),
+            UriKind::Ssh { host, port: Some(p) } => write!(f, "ssh://{host}:{p}"),
         }
     }
 }
@@ -139,7 +148,22 @@ fn ioe(ctx: &str) -> impl Fn(io::Error) -> String + '_ {
     move |e| format!("{ctx}: {e}")
 }
 
-fn ssh_command(host: &str, port: Option<u16>, params: &BTreeMap<String, String>) -> Result<Command> {
+/// `ssh … HOST -- PROGRAM ARGS…`, with the key, port and host key from the
+/// URI. `program` is the default for the `remote-program` parameter.
+pub(crate) fn ssh_command(host: &str, port: Option<u16>, params: &BTreeMap<String, String>, program: &str, args: &[&str]) -> Result<Command> {
+    let program = params.get("remote-program").map(String::as_str).unwrap_or(program);
+    // Like Nix, `localhost` runs the command directly through the shell.
+    if host == "localhost" {
+        let mut line: Vec<String> = program.split_whitespace().map(String::from).collect();
+        line.extend(args.iter().map(|a| shell_quote(a)));
+        if let Some(s) = params.get("remote-store") {
+            line.push("--store".into());
+            line.push(shell_quote(s));
+        }
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(line.join(" "));
+        return Ok(c);
+    }
     let mut c = Command::new("ssh");
     c.arg("-x").arg("-a");
     if let Ok(opts) = std::env::var("NIX_SSHOPTS") {
@@ -161,13 +185,24 @@ fn ssh_command(host: &str, port: Option<u16>, params: &BTreeMap<String, String>)
         std::fs::write(&f, line).map_err(ioe("writing known hosts file"))?;
         c.arg("-o").arg(format!("UserKnownHostsFile={}", f.display()));
     }
-    c.arg(host).arg("--");
-    let program = params.get("remote-program").map(String::as_str).unwrap_or("nix-daemon");
-    c.args(program.split_whitespace()).arg("--stdio");
+    // ssh runs the command through the remote shell, so it is passed as
+    // one quoted line.
+    let mut line: Vec<String> = program.split_whitespace().map(String::from).collect();
+    line.extend(args.iter().map(|a| shell_quote(a)));
     if let Some(s) = params.get("remote-store") {
-        c.arg("--store").arg(s);
+        line.push("--store".into());
+        line.push(shell_quote(s));
     }
+    c.arg(host).arg("--").arg(line.join(" "));
     Ok(c)
+}
+
+fn shell_quote(s: &str) -> String {
+    if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./=:@%+,".contains(&b)) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
 }
 
 impl Connection {
@@ -180,7 +215,7 @@ impl Connection {
                 (Box::new(s), Box::new(s2), None)
             }
             UriKind::SshNg { host, port } => {
-                let mut c = ssh_command(host, *port, &uri.params)?;
+                let mut c = ssh_command(host, *port, &uri.params, "nix-daemon", &["--stdio"])?;
                 let mut child = c
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
@@ -190,6 +225,7 @@ impl Connection {
                 let inp = child.stdin.take().unwrap();
                 (Box::new(out), Box::new(inp), Some(child))
             }
+            UriKind::Ssh { .. } => return Err(format!("{ctx}: ssh:// stores speak the serve protocol; use serve::ServeConnection")),
         };
         let mut c = Connection {
             r: BufReader::with_capacity(1 << 16, r),

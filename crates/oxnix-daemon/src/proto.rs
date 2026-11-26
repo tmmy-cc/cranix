@@ -245,7 +245,7 @@ pub enum BuildStatus {
 }
 
 impl BuildStatus {
-    fn from_u64(n: u64) -> BuildStatus {
+    pub fn from_u64(n: u64) -> BuildStatus {
         use BuildStatus::*;
         [
             Built,
@@ -282,7 +282,7 @@ pub struct Realisation {
 }
 
 impl Realisation {
-    fn to_json(&self) -> String {
+    pub fn to_json(&self) -> String {
         serde_json::json!({
             "id": self.id,
             "outPath": self.out_path.base_name(),
@@ -292,7 +292,7 @@ impl Realisation {
         .to_string()
     }
 
-    fn from_json(s: &str) -> io::Result<Realisation> {
+    pub fn from_json(s: &str) -> io::Result<Realisation> {
         let v: serde_json::Value = serde_json::from_str(s).map_err(|e| bad(format!("invalid realisation: {e}")))?;
         let id = v["id"].as_str().ok_or_else(|| bad("realisation without id"))?.to_string();
         let out = v["outPath"].as_str().ok_or_else(|| bad("realisation without outPath"))?;

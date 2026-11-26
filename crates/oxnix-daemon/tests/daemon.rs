@@ -246,3 +246,64 @@ fn concurrent_clients_build_shared_derivations_once() {
     built.sort();
     assert_eq!(built, ["a", "b", "leaf", "top"], "every derivation is built exactly once");
 }
+
+fn serve_client(store: Arc<Store>, write: bool) -> oxnix_daemon::serve::ServeConnection {
+    let (a, b) = UnixStream::pair().unwrap();
+    let sd = store.dir.clone();
+    let b2 = b.try_clone().unwrap();
+    std::thread::spawn(move || oxnix_daemon::serve::serve(&store, b, b2, write, &BuildOptions::default()));
+    let a2 = a.try_clone().unwrap();
+    let mut c = oxnix_daemon::serve::ServeConnection::from_streams(Box::new(a), Box::new(a2), sd, None, "test".into());
+    c.handshake().unwrap();
+    c
+}
+
+#[test]
+fn serve_protocol_roundtrip() {
+    let root = scratch("serve");
+    let src = Store::open_at(&root.join("src")).unwrap();
+    let dst = Arc::new(Store::open(src.dir.clone(), root.join("dst/store"), root.join("dst/var")).unwrap());
+    let a = src.add_text("a", b"alpha", &BTreeSet::new()).unwrap();
+    let b = src.add_text("b", format!("{}", src.dir.print(&a)).as_bytes(), &[a.clone()].into()).unwrap();
+    let infos: Vec<PathInfo> = [&a, &b].iter().map(|p| src.query_info(p).unwrap().unwrap()).collect();
+
+    let mut ro = serve_client(Arc::clone(&dst), false);
+    assert_eq!(ro.version, oxnix_daemon::serve::SERVE_PROTOCOL_VERSION);
+    assert!(ro.add_paths(&infos, &nar_of(&src)).is_err(), "writing needs --write");
+
+    let mut c = serve_client(Arc::clone(&dst), true);
+    let all: BTreeSet<StorePath> = [a.clone(), b.clone()].into();
+    assert!(c.query_valid_paths(&all).unwrap().is_empty());
+    c.add_paths(&infos, &nar_of(&src)).unwrap();
+    assert_eq!(c.query_valid_paths(&all).unwrap(), all);
+    for i in &infos {
+        assert_eq!(c.query_path_info(&i.path).unwrap().as_ref(), Some(i));
+        let mut got = Vec::new();
+        c.nar_from_path(&i.path, &mut got).unwrap();
+        let mut want = Vec::new();
+        nar::dump(&src.real_path(&i.path), &mut want).unwrap();
+        assert_eq!(got, want);
+    }
+    assert_eq!(c.query_closure(&[b.clone()].into(), false).unwrap(), all);
+    let missing = StorePath::from_base_name(&format!("{}-x", "0".repeat(32))).unwrap();
+    assert_eq!(c.query_path_info(&missing).unwrap(), None);
+
+    // Builds: a derivation with its .drv in the store (BuildPaths) and one
+    // sent in full (BuildDerivation).
+    let bs = Arc::new(Store::open_at(&root.join("build")).unwrap());
+    let d1 = write_drv(&bs, "one", "echo one > $out", &[]);
+    let d2 = write_drv(&bs, "two", "echo two > $out", &[]);
+    let mut c = serve_client(Arc::clone(&bs), true);
+    let res = c.build_paths(&[DerivedPath::Built { drv: d1.clone(), outputs: None }]).unwrap();
+    assert!(res[0].1.status.success(), "{}", res[0].1.error_msg);
+    let out1 = bs.read_derivation(&d1).unwrap().outputs["out"].path.clone().unwrap();
+    assert!(bs.is_valid(&out1));
+    let drv2 = bs.read_derivation(&d2).unwrap();
+    let res = c.build_derivation(&d2, &drv2).unwrap();
+    assert!(res.status.success(), "{}", res.error_msg);
+    assert_eq!(res.built_outputs["out"].out_path, drv2.outputs["out"].path.clone().unwrap());
+    let bad = write_drv(&bs, "bad", "exit 3", &[]);
+    let res = c.build_paths(&[DerivedPath::Built { drv: bad, outputs: None }]).unwrap();
+    assert!(!res[0].1.status.success());
+    assert!(res[0].1.error_msg.contains("failed"), "{}", res[0].1.error_msg);
+}

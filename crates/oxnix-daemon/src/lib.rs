@@ -6,5 +6,7 @@ pub mod client;
 pub mod machines;
 pub mod proto;
 pub mod remote_build;
+pub mod remote_store;
+pub mod serve;
 pub mod server;
 pub mod wire;

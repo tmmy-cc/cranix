@@ -11,7 +11,7 @@ use oxnix_core::{Derivation, StorePath};
 use oxnix_store::build::{platform_compatible, BuildHook, BuildLog, BuildOptions, HookOutcome};
 use oxnix_store::Store;
 
-use crate::client::{ClientOptions, Connection, LogOptions};
+use crate::client::{ClientOptions, LogOptions};
 use crate::machines::Machine;
 
 #[derive(Debug, Default)]
@@ -176,11 +176,11 @@ fn build_on(m: &Machine, store: &Store, drv_path: &StorePath, drv: &Derivation, 
     let fail = Failure::Machine;
     let uri = m.store_uri().map_err(fail)?;
     log.info(&format!("building '{}' on '{}'", sd.print(drv_path), m.uri));
-    let mut conn = Connection::open(&uri).map_err(fail)?;
-    conn.sd = sd.clone();
+    let mut conn = crate::remote_store::open(&uri).map_err(fail)?;
+    conn.set_store_dir(sd.clone());
     // The remote build's output becomes this build's output.
     let sink_log = log.clone();
-    conn.log = LogOptions { build_logs: true, prefix: String::new(), sink: Some(std::sync::Arc::new(move |l: &str| sink_log.line(l))) };
+    conn.set_log(LogOptions { build_logs: true, prefix: String::new(), sink: Some(std::sync::Arc::new(move |l: &str| sink_log.line(l))) });
     let copts = ClientOptions { keep_failed: opts.keep_failed, verbose_build: opts.print_logs, max_jobs: 1, cores: opts.cores as u64, ..Default::default() };
     conn.set_options(&copts).map_err(fail)?;
 
@@ -202,7 +202,7 @@ fn build_on(m: &Machine, store: &Store, drv_path: &StorePath, drv: &Derivation, 
         }
         log.info(&format!("copying {} paths to '{}'", infos.len(), m.uri));
         let nar_of = |info: &oxnix_store::PathInfo, w: &mut dyn Write| oxnix_core::nar::dump(&store.real_path(&info.path), w);
-        conn.add_multiple_to_store(&infos, &nar_of, false).map_err(|e| Failure::Machine(format!("copying inputs: {e}")))?;
+        conn.add_paths(&infos, &nar_of).map_err(|e| Failure::Machine(format!("copying inputs: {e}")))?;
     }
 
     let mut basic = drv.clone();

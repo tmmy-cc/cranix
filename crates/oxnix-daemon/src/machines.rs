@@ -31,7 +31,7 @@ impl Machine {
 
     pub fn store_uri(&self) -> Result<StoreUri, String> {
         let mut u = StoreUri::parse(&self.uri).ok_or_else(|| {
-            format!("unsupported remote builder URI '{}': only ssh-ng://, unix:// and daemon are supported", self.uri)
+            format!("unsupported remote builder URI '{}': only ssh://, ssh-ng://, unix:// and daemon are supported", self.uri)
         })?;
         if let Some(k) = &self.ssh_key {
             u.params.entry("ssh-key".into()).or_insert_with(|| k.clone());
@@ -135,6 +135,7 @@ mod tests {
 
         let u = m[0].store_uri().unwrap();
         assert_eq!(u.params["ssh-key"], "/etc/nix/key");
-        assert!(m[1].store_uri().is_err());
+        assert!(m[1].store_uri().is_ok());
+        assert!(Machine { uri: "s3://bucket".into(), ..m[1].clone() }.store_uri().is_err());
     }
 }
