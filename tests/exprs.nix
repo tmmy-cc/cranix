@@ -140,6 +140,8 @@ let a = { x = 1; }; in a // { y = 2; } // { x = 3; }
 #---
 [ ([ 1 2 ] ++ [ 3 ]) (!true || false && true) (true -> false) ({ a = 1; } ? a) ({ a.b = 1; } ? a.b) ]
 #---
+let s = { a = if s ? a then 1 else 2; b = throw "b"; }; in [ s.a (s ? b) (s ? a.x) ({ a.b = throw "x"; } ? a.b) ]
+#---
 ({ a = 1; }).b or "default"
 #---
 let x = null; in x.y or 5
@@ -223,3 +225,5 @@ with import /nix/store/smgkshm3r00a4rl7gw5ymgfqsd2k573l-source/lib; (systems.ela
 (import /nix/store/smgkshm3r00a4rl7gw5ymgfqsd2k573l-source {}).python3.drvPath
 #---
 (import /nix/store/smgkshm3r00a4rl7gw5ymgfqsd2k573l-source {}).git.drvPath
+#---
+(import /nix/store/smgkshm3r00a4rl7gw5ymgfqsd2k573l-source {}).poppler.drvPath
