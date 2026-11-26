@@ -131,13 +131,27 @@ including misses, are remembered per cache under the store's
 the narinfo that names it, so an interrupted upload never leaves a narinfo
 without its NAR.
 
-Settings use `nix.conf` syntax and are read from
-`~/.config/cranix/cranix.conf`, then `$CRANIX_CONFIG`, then `--option NAME
-VALUE` (or `--NAME VALUE`, `--[no-]NAME`): `substituters`,
-`trusted-public-keys`, `require-sigs`, `substitute`, `secret-key-files`,
-`max-substitution-jobs`, `narinfo-cache-positive-ttl`,
-`narinfo-cache-negative-ttl`, `netrc-file` and `download-attempts`, each list
-also as `extra-NAME`.
+Content-addressed outputs are substituted through their realisations:
+`realise` reads `realisations/<id>.doi` from the caches and, with
+`require-sigs`, uses one only if it carries a signature by one of
+`trusted-public-keys` over Nix's realisation fingerprint. Realisations the
+store registers, from its own builds or from daemon clients, are signed
+with `secret-key-files`, and `copy --to` uploads the realisations of the
+outputs it copies, signed with the copy keys.
+
+**Settings.** One configuration value, in `nix.conf` syntax, feeds builds,
+substitution, fetchers, experimental features, remote builders and the
+daemon. It is read in Nix's order, later sources winning:
+`$NIX_CONF_DIR/nix.conf` (`/etc/nix/nix.conf`), the user `nix.conf`
+(`$NIX_USER_CONF_FILES`, else `nix/nix.conf` under `$XDG_CONFIG_DIRS` and
+`$XDG_CONFIG_HOME`), `~/.config/cranix/cranix.conf`, `$CRANIX_CONFIG`,
+`$NIX_CONFIG`, and then the command line. Files may `include` and
+`!include` others, and list settings take `extra-NAME` to append. Every
+setting also has the flags Nix derives from it: `--option NAME VALUE`,
+`--NAME VALUE`, `--extra-NAME VALUE` for lists and `--NAME`/`--no-NAME` for
+Booleans. Settings of Nix that cranix does not use are accepted silently;
+unknown ones produce one warning each. `cranix config show [NAME]` prints
+the values in effect.
 
 **Daemon and remote builders.** `cranix daemon` serves a store to Nix
 clients over a Unix socket (or stdin/stdout with `--stdio`, which is what
@@ -148,10 +162,22 @@ and error messages, and the operations real clients use, from
 `BuildDerivation`, `NarFromPath` and `CollectGarbage`. Every path a
 connection adds, builds or asks to keep becomes a temporary GC root that
 lives as long as the connection. Build output streams to the client as
-Nix's build activities, so `nix build -L` shows it live. Clients build
+Nix's build activities, so `nix build -L` shows it live; substitutions and
+resolved derivations are reported in the same stream. The daemon builds
+with its own settings, so its `sandbox`, `sandbox-paths` and substituters
+apply whatever the client asks for; clients may set `cores`, `timeout`,
+`max-silent-time` and `useSubstitutes`, and trusted clients may enable
+`ca-derivations`. Missing paths are substituted from the daemon's caches,
+with signature checks, for `EnsurePath`, `BuildPaths` and
+`BuildPathsWithResults`, and `QueryMissing` and the substitutable-path
+queries answer from the caches. Content-addressed derivations build through
+`BuildPaths` and `BuildDerivation`, `QueryRealisation` and
+`RegisterDrvOutput` read and record realisations (untrusted clients need a
+signature by a trusted key), and build results carry the realisations of
+the outputs. Clients build
 concurrently; each derivation's outputs are locked while it builds, so a
 second request for it waits and then finds it built. The daemon's own user and
-`--trusted-users` are trusted; other clients may add content-addressed paths
+`trusted-users` are trusted; other clients may add content-addressed paths
 only (their names are checked against their contents) and cannot build
 input-addressed derivations with `BuildDerivation`.
 
@@ -163,9 +189,8 @@ builders, as client and server. As in Nix, `localhost` in an `ssh://` or
 `--store daemon`, `unix://SOCKET`, `ssh-ng://HOST` or `ssh://HOST` builds
 through a daemon (or `nix-store --serve`): evaluation writes `.drv` files and sources into a local store with
 the daemon's store directory, their closure is copied over, and the daemon
-builds and roots the result. Remote builders come from `--builders` (Nix's
-machines format, defaulting to `builders` in `nix.conf` or
-`/etc/nix/machines`); a derivation goes to the least loaded machine that
+builds and roots the result. Remote builders come from the `builders`
+setting (Nix's machines format, default `@/etc/nix/machines`); a derivation goes to the least loaded machine that
 supports its system and `requiredSystemFeatures`, its input closure is
 copied there, it is built with `BuildDerivation` and its outputs are copied
 back, with the remote build's output shown as the local build's. Unreachable machines are skipped, and the build falls back to the
@@ -216,13 +241,13 @@ Commands: `eval` (`--json`, `--raw`, `--lazy`), `instantiate`, `build`
 `store add|path-info|sign|closure|ls|verify|gc|serve` (`path-info --json -r
 --closure-size`, also against a cache with `--store URL`), `copy --to URL` and
 `copy --from URL` for `file://` and `http(s)://` caches (uploads with `PUT`), and
-`key generate-secret|convert-secret-to-public`, and `daemon` (`--stdio`,
-`--socket`, `--trusted-users`, `--allowed-users`, `--force-trusted`,
-`--force-untrusted`). Global options: `--store`, `--builders`,
-`-I`, `--arg`, `--argstr`, `--system`, `--pure`, `--show-trace`,
-`--experimental-features`/`--extra-experimental-features`, `--option NAME VALUE`
-(also read from `NIX_CONFIG`),
-`--sandbox`/`--no-sandbox`, `--timeout`, `--max-silent-time`. `NIX_PATH`
+`key generate-secret|convert-secret-to-public`, `config show [NAME]`, and
+`daemon` (`--stdio`, `--socket`, `--force-trusted`, `--force-untrusted`).
+Global options: `--store`, `-I`, `--arg`, `--argstr`, `--pure`,
+`--show-trace`, `--option NAME VALUE` and the flags of every setting, such
+as `--system`, `--builders`, `--sandbox`/`--no-sandbox`, `--timeout`,
+`--max-silent-time`, `--trusted-users` and
+`--extra-experimental-features`. `NIX_PATH`
 entries that are absolute paths or `flake:` references (`nixpkgs=flake:nixpkgs`)
 are honoured.
 
@@ -234,7 +259,12 @@ Flake evaluation is pure unless `--impure` is given; the lock flags of Nix
 (`--no-write-lock-file`, `--update-input`, `--override-input`,
 `--override-flake`, `--recreate-lock-file`, `--commit-lock-file`,
 `--refresh`, …) are accepted. `run`, `shell` and `develop` use outputs that
-are already in the host store, so they work with the default chroot store.
+are already in the host store and build the missing ones: through the
+daemon given with `--store` (such as `--store daemon` for the system Nix
+daemon), else in the evaluation store, which substitutes what it can and
+hands builds to the configured remote builders. When the default chroot
+store would have to build and no builders are configured, they say how to
+make building possible.
 
 ```bash
 target/release/cranix eval nixpkgs#hello.drvPath
@@ -279,7 +309,7 @@ lines, a short trace (all frames with `--show-trace`), and hints such as
 close names for a missing attribute or an undefined variable.
 
 Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
-`git` hashing mode, signed realisations, `unsafeGetAttrPos` (returns
+`git` hashing mode, `unsafeGetAttrPos` (returns
 `null`), and profiles/`nix-env`.
 
 ## Testing
@@ -296,12 +326,24 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
   errors: snippets, traces, hints and colour.
 * `tests/catest.py` builds content-addressed, impure and text-hashed
   derivations with Nix and with cranix in the same scratch store location and
-  compares drvPaths, output paths, realisations, rebuilds and messages.
+  compares drvPaths, output paths, realisations, rebuilds and messages, then
+  has real Nix build the same derivations through `cranix daemon`
+  (`nix build --store unix://…`) and compares again.
 * `crates/cranix-daemon/tests/daemon.rs` runs a client against an in-process
   daemon: copying closures, NAR transfer, temporary roots against the
   collector, untrusted clients, remote builds through a daemon socket,
-  concurrent clients building overlapping graphs, and every command of the
-  serve protocol.
+  concurrent clients building overlapping graphs, substitution of signed
+  paths from the local cache server (and refusal of paths signed by an
+  untrusted key), and every command of the serve protocol.
+* `crates/cranix/tests/settings.rs` checks the precedence of every
+  configuration source and of the command line flags through
+  `cranix config show`, and that unknown settings warn once.
+* `crates/cranix/tests/flake_build.rs` runs a flake package with `cranix run`
+  and `cranix shell` through a `cranix daemon` that builds it, and checks
+  the error without any builder.
+* `crates/cranix-store/tests/realisations.rs` signs the realisation of a
+  content-addressed build, uploads it, substitutes it into a store that
+  cannot build, and refuses one signed by an untrusted key.
 * `tests/flaketest.py` compares fetchers and flakes with Nix: store paths
   and attributes of `fetchGit` (clean and dirty trees, export-ignore),
   `fetchTree`, `fetchTarball` and `fetchurl`; the `flake.lock` of a flake
@@ -320,7 +362,9 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
   host file outside its closure nor reach the host's network, that a
   fixed-output derivation can, that `__noChroot` needs relaxed mode, and
   that `timeout` and `max-silent-time` kill a build with its background
-  processes. On Linux these need unprivileged user namespaces.
+  processes. The same probe runs through `cranix daemon` started with
+  `--option sandbox true` and with `--no-sandbox`. On Linux these need
+  unprivileged user namespaces.
 * `tests/sandbox-linux.sh [SYSTEM...]` builds cranix with nixpkgs and runs
   those checks inside a Nix build, as the unprivileged build user, for
   `aarch64-linux` and `x86_64-linux` on this machine or its remote builders.

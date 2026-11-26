@@ -38,6 +38,7 @@ benchmark section says otherwise.
 | Builder                | goal/worker state machine, sandbox | same, sandbox             | separate build service (OCI / bubblewrap) | thread-pool scheduler, sandbox (macOS `sandbox-exec`, Linux namespaces), remote builders |
 | Substituters / caches  | yes, signed                 | yes                          | yes (serves and consumes NAR/narinfo)  | yes, signed                             |
 | Flakes                 | experimental                | experimental                 | no                                     | yes, lock files compatible with Nix     |
+| Configuration          | `nix.conf`, `NIX_CONFIG`, flags | same as Nix              | own options                            | Nix's files and flags, then `cranix.conf` and `CRANIX_CONFIG` |
 | Drop-in for `nix`      | —                           | yes                          | no (toolkit)                           | no (subset CLI)                         |
 | nixpkgs `drvPath` parity | reference                 | yes                          | yes for large parts of nixpkgs         | yes for tested attributes (`hello`, `python3`, `git`) |
 
@@ -121,12 +122,22 @@ Nix's single-process, single-machine shape:
   (`passAsFile`, structured attributes as JSON, `impureEnvVars`),
   reference scanning, content-addressed and impure derivations, the build
   sandbox and remote builders. A daemon speaks Nix's worker protocol, so
-  Nix clients can use an cranix store and cranix can use a Nix daemon.
+  Nix clients can use a cranix store and cranix can use a Nix daemon. The
+  daemon substitutes from its binary caches with signature checks, builds
+  under its own sandbox settings, and records and serves realisations, so
+  real Nix builds content-addressed derivations through it with the same
+  paths as in a Nix store.
+* One settings value, read from the same files and in the same order as
+  Nix (`nix.conf`, `NIX_CONFIG`, `--option`, `--NAME`/`--no-NAME`/`--extra-NAME`),
+  configures the builder, substitution, fetchers, experimental features,
+  remote builders and the daemon.
 * Substitution fetches whole closures from `file://` and `https://` binary
   caches before building, checking signatures and streaming hashes, and
   remembers lookups on disk with Nix's TTLs (one file per path, where Nix
   uses SQLite); `copy --to` writes caches that Nix reads, over `PUT` for
-  HTTP, with NARs compressed like cache.nixos.org's.
+  HTTP, with NARs compressed like cache.nixos.org's, together with the
+  signed realisations of content-addressed outputs, which substitution
+  checks against `trusted-public-keys`.
 
 ### Measured against Nix 2.24
 
