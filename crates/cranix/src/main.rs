@@ -48,6 +48,7 @@ commands:
   store sign -k KEYFILE [-r] PATH...            add signatures to local paths
   copy --to URL PATH... | copy --from URL PATH...   copy closures to or from a binary cache
   key generate-secret --key-name NAME | key convert-secret-to-public < KEY
+  config show [NAME]                             print the settings in effect
   store serve [--write]                          serve the store to ssh:// clients (also: --serve)
   daemon [--stdio] [--socket PATH] [--force-trusted|--force-untrusted]
                                                  serve the store to Nix clients
@@ -294,6 +295,7 @@ fn run() -> Result<(), String> {
         "store" => cmd_store(&cli, &args),
         "copy" => cmd_copy(&cli, &args),
         "key" => cmd_key(&args),
+        "config" => cmd_config(&cli, &args),
         "daemon" => {
             if cli.remote.is_some() {
                 return Err("cranix daemon serves a local store; pass --store DIR".into());
@@ -1131,6 +1133,24 @@ fn cmd_copy(cli: &Cli, args: &[String]) -> Result<(), String> {
             Ok(())
         }
         _ => Err("usage: cranix copy --to URL PATH... | copy --from URL PATH...".into()),
+    }
+}
+
+/// `config show [NAME]`: the settings in effect, as `name = value` lines.
+fn cmd_config(cli: &Cli, args: &[String]) -> Result<(), String> {
+    match args {
+        [c] if c == "show" => {
+            for n in Settings::names() {
+                println!("{n} = {}", cli.settings.get(n).unwrap_or_default());
+            }
+            Ok(())
+        }
+        [c, name] if c == "show" => {
+            let v = cli.settings.get(name).ok_or_else(|| format!("could not find setting '{name}'"))?;
+            println!("{v}");
+            Ok(())
+        }
+        _ => Err("usage: cranix config show [NAME]".into()),
     }
 }
 
