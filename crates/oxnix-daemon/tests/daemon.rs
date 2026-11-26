@@ -3,12 +3,15 @@
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use oxnix_core::{nar, StoreDir, StorePath};
+use oxnix_core::{nar, Derivation, Output, StoreDir, StorePath};
 use oxnix_daemon::client::Connection;
+use oxnix_daemon::machines;
+use oxnix_daemon::remote_build::RemoteBuilders;
 use oxnix_daemon::server::{Daemon, DaemonConfig};
+use oxnix_store::build::{host_system, BuildOptions};
 use oxnix_store::{PathInfo, Store};
 
 fn scratch(name: &str) -> PathBuf {
@@ -123,4 +126,75 @@ fn untrusted_clients_need_content_addresses() {
     assert!(!daemon.store.is_valid(&info.path));
     // The connection is still usable after errors.
     assert!(c.is_valid_path(&a).unwrap());
+}
+
+fn write_drv(store: &Store, name: &str, script: &str, inputs: &[(StorePath, &str)]) -> StorePath {
+    let sd = store.dir.clone();
+    let mut d = Derivation {
+        name: name.into(),
+        platform: host_system(),
+        builder: "/bin/sh".into(),
+        args: vec!["-c".into(), script.into()],
+        ..Default::default()
+    };
+    d.outputs.insert("out".into(), Output::default());
+    for (p, o) in inputs {
+        d.input_drvs.entry(p.clone()).or_default().insert(o.to_string());
+        let dep = store.read_derivation(p).unwrap();
+        d.env.insert("dep".into(), sd.print(dep.outputs["out"].path.as_ref().unwrap()));
+    }
+    let mut hashes = std::collections::HashMap::new();
+    d.fill_output_paths(&sd, &mut |p| oxnix_daemon::server::drv_hash(store, p, &mut hashes)).unwrap();
+    store.add_text(&format!("{name}.drv"), d.to_aterm(&sd).as_bytes(), &d.references()).unwrap()
+}
+
+#[test]
+fn remote_build_through_oxnix_daemon() {
+    let root = scratch("remote");
+    // The builder's store can run builds; the local one shares its store
+    // directory but keeps its objects elsewhere, so it can only build
+    // remotely.
+    let remote = Store::open_at(&root.join("remote")).unwrap();
+    let sd = remote.dir.clone();
+    let local = Store::open(sd.clone(), root.join("local/store"), root.join("local/var")).unwrap();
+    assert!(!local.can_build());
+
+    let sock: PathBuf = format!("/tmp/oxnix-test-{}.sock", std::process::id()).into();
+    let daemon = Arc::new(Daemon::new(remote, DaemonConfig::default()));
+    {
+        let d = Arc::clone(&daemon);
+        let s = sock.clone();
+        std::thread::spawn(move || d.serve_socket(&s));
+    }
+    for _ in 0..100 {
+        if Path::new(&sock).exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let dep = write_drv(&local, "dep", "echo dep > $out", &[]);
+    let top = write_drv(&local, "top", "read x < $dep; echo \"$x and top\" > $out; echo $dep >> $out", &[(dep.clone(), "out")]);
+
+    let spec = format!("unix://{} {} - 2", sock.display(), host_system());
+    let hook = RemoteBuilders::new(machines::parse(&spec, &host_system()).unwrap(), 1);
+    let opts = BuildOptions { jobs: hook.total_slots(), hook: Some(Arc::new(hook)), ..Default::default() };
+    let res = local.realise(&[top.clone()], &opts).unwrap();
+    let out = &res[&top]["out"];
+    let text = std::fs::read_to_string(local.real_path(out)).unwrap();
+    let dep_out = local.read_derivation(&dep).unwrap().outputs["out"].path.clone().unwrap();
+    assert_eq!(text, format!("dep and top\n{}\n", sd.print(&dep_out)));
+    let info = local.query_info(out).unwrap().unwrap();
+    assert_eq!(info.references, [dep_out].into());
+    assert_eq!(info.deriver.as_ref(), Some(&top));
+    assert!(local.verify(out).unwrap());
+
+    // With no machine able to take it and no local slot, building fails
+    // with an explanation.
+    let other = write_drv(&local, "other", "echo > $out", &[]);
+    let hook = RemoteBuilders::new(machines::parse("unix:///nonexistent riscv64-linux", &host_system()).unwrap(), 0);
+    let opts = BuildOptions { jobs: 1, hook: Some(Arc::new(hook)), ..Default::default() };
+    let e = local.realise(&[other], &opts).unwrap_err();
+    assert!(e.contains("max-jobs = 0"), "{e}");
+    let _ = std::fs::remove_file(&sock);
 }

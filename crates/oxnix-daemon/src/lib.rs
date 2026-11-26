@@ -3,6 +3,8 @@
 //! remote builders on top of that client.
 
 pub mod client;
+pub mod machines;
 pub mod proto;
+pub mod remote_build;
 pub mod server;
 pub mod wire;
