@@ -20,7 +20,8 @@ bootstrap graph hashes identically.
 | `oxnix-store`  | 2.5k  | Local store, path metadata, `add_text`/`add_path`, reference scanning, closures, GC roots and collection, verification, parallel builder, build sandbox |
 | `oxnix-eval`   | 4.6k  | Lexer/parser, scope-resolving compiler, lazy evaluator, ~110 builtins, `derivationStrict`, printing, JSON |
 | `oxnix-daemon` | 3.5k  | Nix worker protocol (up to 1.37) and serve protocol (2.7): `oxnix daemon`, `oxnix store serve`, clients for `unix://`, `ssh-ng://` and `ssh://` stores, remote builders |
-| `oxnix`        | 0.6k  | CLI |
+| `oxnix-fetchers` | 3.0k | Fetchers for files, tarballs, paths, Git and GitHub/GitLab/SourceHut, the fetcher cache, flake registries |
+| `oxnix`        | 1.4k  | CLI, flake commands and installables |
 
 The core crate has no knowledge of the evaluator or the file system layout of
 a store, so it can be reused by tools that only need hashing, NAR or
@@ -204,7 +205,23 @@ Commands: `eval` (`--json`, `--raw`, `--lazy`), `instantiate`, `build`
 `--force-untrusted`). Global options: `--store`, `--builders`,
 `-I`, `--arg`, `--argstr`, `--system`, `--pure`, `--option NAME VALUE` (also read from `NIX_CONFIG`),
 `--sandbox`/`--no-sandbox`, `--timeout`, `--max-silent-time`. `NIX_PATH`
-entries that are absolute paths are honoured.
+entries that are absolute paths or `flake:` references (`nixpkgs=flake:nixpkgs`)
+are honoured.
+
+Flakes: `flake metadata|show|lock|update|check|init|new`, and installables
+such as `.#hello` or `nixpkgs#hello` for `eval`, `build`, `run`, `shell` and
+`develop`, with the default attribute lookup of Nix (`packages.<system>.default`,
+`legacyPackages.<system>.`, `apps.<system>.`, `devShells.<system>.`).
+Flake evaluation is pure unless `--impure` is given; the lock flags of Nix
+(`--no-write-lock-file`, `--update-input`, `--override-input`,
+`--override-flake`, `--recreate-lock-file`, `--commit-lock-file`,
+`--refresh`, …) are accepted. `run`, `shell` and `develop` use outputs that
+are already in the host store, so they work with the default chroot store.
+
+```bash
+target/release/oxnix eval nixpkgs#hello.drvPath
+target/release/oxnix flake lock && target/release/oxnix flake metadata
+```
 
 macOS has no shell in the sandbox unless one is listed:
 
@@ -222,10 +239,20 @@ string contexts, `derivation`/`derivationStrict` with structured attributes,
 `builtins.path`/`filterSource`, import from derivation, the local store
 operations listed above, binary caches (narinfo reading and writing,
 signatures, substitution and `copy`), the daemon protocol (server and
-client) and remote builders over `ssh-ng://` and `ssh://`.
+client), remote builders over `ssh-ng://` and `ssh://`, the fetchers (`fetchurl`, `fetchTarball`,
+`fetchGit`, `fetchTree` with the types `file`, `tarball`, `path`, `git`,
+`github`, `gitlab`, `sourcehut` and `indirect`) and flakes (`flake.nix`,
+`flake.lock` version 7, flake references, the user, system and global
+registries, `getFlake`, `parseFlakeRef`).
 
-Not implemented: S3 stores,
-flakes, `fetchGit`/`fetchTarball`/`fetchTree`, content-addressed
+Fetched inputs get the same store paths and attributes as in Nix, and lock
+files are interchangeable with Nix's. Downloads, Git clones and ref lookups
+are cached in the store's state directory (`fetcher-cache`, `gitv3`) and
+expire after `tarball-ttl` (read from `nix.conf`). Archives are decompressed
+with `gzip`, `xz`, `bzip2` or `zstd` and Git repositories are read with the
+`git` command line tool.
+
+Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, content-addressed
 (floating) and impure derivations, `fromTOML`, `toXML`, `unsafeGetAttrPos`
 (returns `null`), and profiles/`nix-env`.
 
@@ -244,6 +271,13 @@ flakes, `fetchGit`/`fetchTarball`/`fetchTree`, content-addressed
   collector, untrusted clients, remote builds through a daemon socket,
   concurrent clients building overlapping graphs, and every command of the
   serve protocol.
+* `tests/flaketest.py` compares fetchers and flakes with Nix: store paths
+  and attributes of `fetchGit` (clean and dirty trees, export-ignore),
+  `fetchTree`, `fetchTarball` and `fetchurl`; the `flake.lock` of a flake
+  with a `follows` input, which `nix flake metadata` must leave unchanged;
+  flake outputs, `getFlake` and `flake metadata --json`; and
+  `nixpkgs#hello.drvPath`. `--network` adds remote Git and GitHub inputs.
+  The unit tests round-trip a `flake.lock` written by Nix.
 * `tests/build.nix` exercises the builder: parallel leaves, references,
   `passAsFile`, multiple outputs and a fixed-output derivation.
 * `tests/http-cache.sh` uploads a closure to a local HTTP cache (the
