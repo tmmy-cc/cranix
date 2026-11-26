@@ -12,15 +12,15 @@ use oxnix_core::{nar, FileIngestion, StorePath};
 
 use crate::{canonicalise, fsutil, PathInfo, Result, Store};
 
-/// Paths being imported by some thread of this process; a second import of
-/// the same path waits for the first one.
+/// Keys (paths being imported or built) held by some thread of this
+/// process; a second holder of the same key waits for the first one.
 static BUSY: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 static BUSY_CV: Condvar = Condvar::new();
 
-struct PathLock(String);
+pub(crate) struct PathLock(String);
 
 impl PathLock {
-    fn take(key: String) -> PathLock {
+    pub(crate) fn take(key: String) -> PathLock {
         let mut g = BUSY.lock().unwrap();
         while g.contains(&key) {
             g = BUSY_CV.wait(g).unwrap();
@@ -57,7 +57,7 @@ impl Store {
     /// when the stream's hash or size differ from the declared ones. The
     /// stream is read to its end even when the path is already valid.
     pub fn import_nar(&self, info: &PathInfo, nar: impl Read) -> Result<()> {
-        let _lock = PathLock::take(self.dir.print(&info.path));
+        let _lock = PathLock::take(self.real_path(&info.path).to_string_lossy().into_owned());
         let mut src = Hashing { inner: nar, hasher: Hasher::new(HashAlgo::Sha256), size: 0 };
         if self.is_valid(&info.path) {
             io::copy(&mut src, &mut io::sink()).map_err(|e| format!("receiving '{}': {e}", info.path))?;

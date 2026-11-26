@@ -15,6 +15,7 @@ use oxnix_core::hash::{Hash, HashAlgo, HashSink};
 use oxnix_core::{nar, Derivation, FileIngestion, StorePath};
 
 use crate::sandbox::{self, Sandbox, SandboxMode};
+use crate::nar_import::PathLock;
 use crate::{canonicalise, fsutil, refs, PathInfo, Result, Store};
 
 #[derive(Clone, Debug)]
@@ -46,13 +47,72 @@ pub struct BuildOptions {
     pub max_silent_time: u64,
     /// Consulted before every local build, e.g. to use remote builders.
     pub hook: Option<Arc<dyn BuildHook>>,
+    /// Receives build progress and output in place of stderr.
+    pub logger: Option<Arc<dyn BuildLogger>>,
+}
+
+/// Receives the activity of builds: one `start`, the builder's output
+/// lines, and one `stop` per build.
+pub trait BuildLogger: Send + Sync + std::fmt::Debug {
+    fn start(&self, id: u64, drv_path: &str, text: &str);
+    fn line(&self, id: u64, line: &str);
+    fn stop(&self, id: u64);
+}
+
+/// Where the output of one build goes: the configured logger, or stderr
+/// prefixed with the derivation name when logs are printed.
+#[derive(Clone, Debug)]
+pub struct BuildLog {
+    logger: Option<Arc<dyn BuildLogger>>,
+    id: u64,
+    name: String,
+    print: bool,
+}
+
+impl BuildLog {
+    fn start(opts: &BuildOptions, drv_path: &str, name: &str, text: &str) -> BuildLog {
+        static NEXT: AtomicUsize = AtomicUsize::new(1);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed) as u64;
+        match &opts.logger {
+            Some(l) => l.start(id, drv_path, text),
+            None => eprintln!("{text}"),
+        }
+        BuildLog { logger: opts.logger.clone(), id, name: name.to_string(), print: opts.print_logs }
+    }
+
+    /// One line of build output.
+    pub fn line(&self, line: &str) {
+        match &self.logger {
+            Some(l) => l.line(self.id, line),
+            None if self.print => eprintln!("{}> {line}", self.name),
+            None => {}
+        }
+    }
+
+    /// A progress message about the build.
+    pub fn info(&self, msg: &str) {
+        match &self.logger {
+            Some(l) => l.line(self.id, msg),
+            None => eprintln!("{msg}"),
+        }
+    }
+}
+
+struct Activity<'a>(&'a BuildLog);
+
+impl Drop for Activity<'_> {
+    fn drop(&mut self) {
+        if let Some(l) = &self.0.logger {
+            l.stop(self.0.id);
+        }
+    }
 }
 
 /// Lets something else build a derivation in place of the local builder.
 pub trait BuildHook: Send + Sync + std::fmt::Debug {
     /// Either builds `drv` and registers its outputs in `store`, or asks for
     /// a local build, which runs while the returned slot is held.
-    fn build(&self, store: &Store, drv_path: &StorePath, drv: &Derivation, opts: &BuildOptions) -> Result<HookOutcome>;
+    fn build(&self, store: &Store, drv_path: &StorePath, drv: &Derivation, opts: &BuildOptions, log: &BuildLog) -> Result<HookOutcome>;
 }
 
 pub enum HookOutcome {
@@ -84,6 +144,7 @@ impl Default for BuildOptions {
             timeout: 0,
             max_silent_time: 0,
             hook: None,
+            logger: None,
         }
     }
 }
@@ -297,8 +358,7 @@ impl Store {
         if !self.can_build() && opts.hook.is_none() {
             return Err(self.cannot_build());
         }
-        eprintln!("building '{}'", self.dir.print(drv_path));
-        self.build_one(drv_path, drv, &HashMap::new(), opts)
+        self.build_one(drv_path, drv, &HashMap::new(), opts, "")
     }
 
     fn run_scheduler(
@@ -361,8 +421,7 @@ impl Store {
                         return;
                     };
                     let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    eprintln!("building '{}' ({n}/{total})", self.dir.print(&p));
-                    let r = self.build_one(&p, &drvs[&p], drvs, opts);
+                    let r = self.build_one(&p, &drvs[&p], drvs, opts, &format!(" ({n}/{total})"));
                     let mut g = state.lock().unwrap();
                     g.running -= 1;
                     match r {
@@ -396,18 +455,30 @@ impl Store {
         drv: &Derivation,
         all: &HashMap<StorePath, Derivation>,
         opts: &BuildOptions,
+        progress: &str,
     ) -> Result<()> {
         let outputs: Vec<(&String, &StorePath)> = drv
             .outputs
             .iter()
             .map(|(n, o)| o.path.as_ref().map(|p| (n, p)).ok_or_else(|| format!("output '{n}' of '{drv_path}' has no fixed path")))
             .collect::<Result<_>>()?;
+        // Concurrent requests for the same derivation build it once: the
+        // later ones wait here and then find the outputs valid.
+        let mut keys: Vec<String> = outputs.iter().map(|(_, p)| format!("build:{}", self.real_path(p).display())).collect();
+        keys.sort();
+        let _locks: Vec<PathLock> = keys.into_iter().map(PathLock::take).collect();
+        if !self.missing_outputs(drv) {
+            return Ok(());
+        }
+        let drv_s = self.dir.print(drv_path);
+        let log = BuildLog::start(opts, &drv_s, &drv.name, &format!("building '{drv_s}'{progress}"));
+        let _activity = Activity(&log);
         for (_, p) in &outputs {
             fsutil::remove_all(&self.real_path(p))?;
         }
 
         let _slot = match &opts.hook {
-            Some(h) if !drv.builder.starts_with("builtin:") => match h.build(self, drv_path, drv, opts)? {
+            Some(h) if !drv.builder.starts_with("builtin:") => match h.build(self, drv_path, drv, opts, &log)? {
                 HookOutcome::Built => return Ok(()),
                 HookOutcome::Local(slot) => slot,
             },
@@ -448,7 +519,7 @@ impl Store {
                 ));
             }
             let outs: Vec<&StorePath> = outputs.iter().map(|(_, p)| *p).collect();
-            self.run_builder(drv_path, drv, &inputs, &outs, opts)?;
+            self.run_builder(drv_path, drv, &inputs, &outs, opts, &log)?;
         }
 
         let mut candidates = inputs;
@@ -503,6 +574,7 @@ impl Store {
         inputs: &BTreeSet<StorePath>,
         outputs: &[&StorePath],
         opts: &BuildOptions,
+        build_log: &BuildLog,
     ) -> Result<()> {
         let spec = sandbox::plan(self, drv_path, drv, inputs, opts)?;
 
@@ -526,7 +598,7 @@ impl Store {
                 return Err(e);
             }
         };
-        let r = self.run_in(drv_path, drv, &sb, &top, &top_s, outputs, opts);
+        let r = self.run_in(drv_path, drv, &sb, &top, &top_s, outputs, opts, build_log);
         let failed = r.is_err();
         let cleaned = sb.cleanup();
         if !failed || !opts.keep_failed {
@@ -545,6 +617,7 @@ impl Store {
         top_s: &str,
         outputs: &[&StorePath],
         opts: &BuildOptions,
+        build_log: &BuildLog,
     ) -> Result<()> {
         // The build directory as the builder sees it.
         let tmp = sb.build_dir(top_s);
@@ -627,7 +700,6 @@ impl Store {
 
         let pump = |r: fs::File| {
             let log = &log;
-            let name = &drv.name;
             let last_output = &last_output;
             move || {
                 for line in BufReader::new(r).split(b'\n') {
@@ -637,9 +709,7 @@ impl Store {
                     let _ = l.write_all(&line);
                     let _ = l.write_all(b"\n");
                     drop(l);
-                    if opts.print_logs {
-                        eprintln!("{name}> {}", String::from_utf8_lossy(&line));
-                    }
+                    build_log.line(&String::from_utf8_lossy(&line));
                 }
             }
         };

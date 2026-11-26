@@ -8,7 +8,7 @@ use std::io::Write;
 use std::sync::{Arc, Condvar, Mutex};
 
 use oxnix_core::{Derivation, StorePath};
-use oxnix_store::build::{platform_compatible, BuildHook, BuildOptions, HookOutcome};
+use oxnix_store::build::{platform_compatible, BuildHook, BuildLog, BuildOptions, HookOutcome};
 use oxnix_store::Store;
 
 use crate::client::{ClientOptions, Connection, LogOptions};
@@ -106,7 +106,7 @@ impl RemoteBuilders {
 }
 
 impl BuildHook for RemoteBuilders {
-    fn build(&self, store: &Store, drv_path: &StorePath, drv: &Derivation, opts: &BuildOptions) -> Result<HookOutcome, String> {
+    fn build(&self, store: &Store, drv_path: &StorePath, drv: &Derivation, opts: &BuildOptions, log: &BuildLog) -> Result<HookOutcome, String> {
         let inner = &self.inner;
         let features = required_features(drv);
         let local_ok = inner.local_jobs > 0 && store.can_build() && platform_compatible(&drv.platform, &opts.system);
@@ -158,11 +158,11 @@ impl BuildHook for RemoteBuilders {
             drop(st);
             let _slot = MachineSlot(Arc::clone(inner), i);
             let m = &inner.machines[i];
-            match build_on(m, store, drv_path, drv, opts) {
+            match build_on(m, store, drv_path, drv, opts, log) {
                 Ok(()) => return Ok(HookOutcome::Built),
                 Err(Failure::Build(e)) => return Err(e),
                 Err(Failure::Machine(e)) => {
-                    eprintln!("warning: remote builder '{}' failed, trying elsewhere: {e}", m.uri);
+                    log.info(&format!("warning: remote builder '{}' failed, trying elsewhere: {e}", m.uri));
                     errors.push(format!("  {}: {e}", m.uri));
                     inner.state.lock().unwrap().failed[i] = true;
                 }
@@ -171,11 +171,11 @@ impl BuildHook for RemoteBuilders {
     }
 }
 
-fn build_on(m: &Machine, store: &Store, drv_path: &StorePath, drv: &Derivation, opts: &BuildOptions) -> Result<(), Failure> {
+fn build_on(m: &Machine, store: &Store, drv_path: &StorePath, drv: &Derivation, opts: &BuildOptions, log: &BuildLog) -> Result<(), Failure> {
     let sd = &store.dir;
     let fail = Failure::Machine;
     let uri = m.store_uri().map_err(fail)?;
-    eprintln!("building '{}' on '{}'", sd.print(drv_path), m.uri);
+    log.info(&format!("building '{}' on '{}'", sd.print(drv_path), m.uri));
     let mut conn = Connection::open(&uri).map_err(fail)?;
     conn.sd = sd.clone();
     conn.log = LogOptions { build_logs: opts.print_logs, prefix: format!("{}> ", drv.name) };
@@ -198,7 +198,7 @@ fn build_on(m: &Machine, store: &Store, drv_path: &StorePath, drv: &Derivation, 
         for p in &order {
             infos.push(store.query_info(p).map_err(fail)?.ok_or_else(|| Failure::Machine(format!("input '{}' is not valid", sd.print(p))))?);
         }
-        eprintln!("copying {} paths to '{}'", infos.len(), m.uri);
+        log.info(&format!("copying {} paths to '{}'", infos.len(), m.uri));
         let nar_of = |info: &oxnix_store::PathInfo, w: &mut dyn Write| oxnix_core::nar::dump(&store.real_path(&info.path), w);
         conn.add_multiple_to_store(&infos, &nar_of, false).map_err(|e| Failure::Machine(format!("copying inputs: {e}")))?;
     }
