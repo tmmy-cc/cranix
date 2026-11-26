@@ -16,6 +16,8 @@ use oxnix_store::config::Settings;
 use oxnix_store::substitute::{http_client, trusted_keys, Substituters};
 use oxnix_store::Store;
 
+mod remote;
+
 #[cfg(not(feature = "dhat-heap"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -40,10 +42,16 @@ commands:
   store sign -k KEYFILE [-r] PATH...            add signatures to local paths
   copy --to URL PATH... | copy --from URL PATH...   copy closures to or from a binary cache
   key generate-secret --key-name NAME | key convert-secret-to-public < KEY
+  daemon [--stdio] [--socket PATH] [--trusted-users U] [--allowed-users U] [--force-trusted|--force-untrusted]
+                                                 serve the store to Nix clients
 
 global options:
   --store DIR       use a store rooted at DIR whose store directory is DIR/store
                     (required for building); default: chroot store at ~/.local/share/oxnix
+  --store daemon | unix://SOCKET[?store=DIR] | ssh-ng://[USER@]HOST
+                    build through a Nix daemon (evaluation still writes to the default store)
+  --builders SPEC   remote builders in Nix's machines format, or @FILE
+                    (default: `builders` from nix.conf, else @/etc/nix/machines)
   -I [PREFIX=]PATH  add to the search path (also read from $NIX_PATH)
   --arg NAME EXPR, --argstr NAME STRING   arguments for auto-called functions
   --system SYSTEM   value of builtins.currentSystem
@@ -61,6 +69,8 @@ global options:
 
 struct Cli {
     store: Option<PathBuf>,
+    remote: Option<oxnix_daemon::client::StoreUri>,
+    builders: Option<String>,
     search: Vec<(String, String)>,
     args: Vec<(String, ArgVal)>,
     system: String,
@@ -88,6 +98,8 @@ fn parse_search(s: &str) -> Option<(String, String)> {
 fn parse_cli() -> Result<Cli, String> {
     let mut cli = Cli {
         store: None,
+        remote: None,
+        builders: None,
         search: Vec::new(),
         args: Vec::new(),
         system: host_system(),
@@ -110,7 +122,14 @@ fn parse_cli() -> Result<Cli, String> {
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().ok_or_else(|| format!("{name} requires an argument"));
         match a.as_str() {
-            "--store" => cli.store = Some(PathBuf::from(val("--store")?)),
+            "--store" => {
+                let v = val("--store")?;
+                match oxnix_daemon::client::StoreUri::parse(&v) {
+                    Some(u) => cli.remote = Some(u),
+                    None => cli.store = Some(PathBuf::from(v)),
+                }
+            }
+            "--builders" => cli.builders = Some(val("--builders")?),
             "-I" => {
                 let v = val("-I")?;
                 cli.search.extend(parse_search(&v));
@@ -185,6 +204,9 @@ fn store_url(cli: &Cli) -> Option<String> {
 
 /// Opens the local store without substituters.
 fn open_local_store(cli: &Cli) -> Result<Store, String> {
+    if let Some(u) = &cli.remote {
+        return remote::eval_store(u);
+    }
     if let Some(u) = store_url(cli) {
         return Err(format!("binary cache '{u}' can only be used with 'store path-info'"));
     }
@@ -231,6 +253,13 @@ fn run() -> Result<(), String> {
         "store" => cmd_store(&cli, &args),
         "copy" => cmd_copy(&cli, &args),
         "key" => cmd_key(&args),
+        "daemon" => {
+            if cli.remote.is_some() {
+                return Err("oxnix daemon serves a local store; pass --store DIR".into());
+            }
+            let builders = cli.builders.clone().unwrap_or_else(remote::default_builders);
+            remote::cmd_daemon(open_store(&cli)?, &args, BuildOptions { system: cli.system.clone(), ..Default::default() }, &builders)
+        }
         c => Err(format!("unknown command '{c}'\n{USAGE}")),
     }
 }
@@ -417,7 +446,16 @@ fn cmd_instantiate(cli: &Cli, args: &[String], build: bool) -> Result<(), String
     opts.print_logs = t.flags.contains("-L") || t.flags.contains("--print-build-logs");
     opts.keep_failed |= t.flags.contains("-K") || t.flags.contains("--keep-failed");
     let paths: Vec<StorePath> = drvs.iter().map(|(d, _)| d.clone()).collect();
-    let res = ev.store.realise(&paths, &opts)?;
+    let (res, mut session) = match &cli.remote {
+        Some(u) => {
+            let mut s = remote::Session::open(u)?;
+            (s.realise(&ev.store, &paths, &opts)?, Some(s))
+        }
+        None => {
+            remote::configure_builders(&mut opts, &cli.builders.clone().unwrap_or_else(remote::default_builders))?;
+            (ev.store.realise(&paths, &opts)?, None)
+        }
+    };
     let link_base = t.opts.iter().find(|(k, _)| k == "-o" || k == "--out-link").map(|(_, v)| v.clone()).unwrap_or("result".into());
     let no_link = t.flags.contains("--no-link");
     for (i, (d, out)) in drvs.iter().enumerate() {
@@ -431,7 +469,10 @@ fn cmd_instantiate(cli: &Cli, args: &[String], build: bool) -> Result<(), String
             }
             let _ = std::fs::remove_file(&link);
             std::os::unix::fs::symlink(&s, &link).map_err(|e| format!("creating '{link}': {e}"))?;
-            ev.store.add_indirect_root(Path::new(&link))?;
+            match &mut session {
+                Some(sess) => sess.add_indirect_root(Path::new(&link))?,
+                None => ev.store.add_indirect_root(Path::new(&link))?,
+            }
         }
     }
     Ok(())

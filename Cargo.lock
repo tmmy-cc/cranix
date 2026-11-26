@@ -363,6 +363,7 @@ dependencies = [
  "dhat",
  "mimalloc",
  "oxnix-core",
+ "oxnix-daemon",
  "oxnix-eval",
  "oxnix-store",
  "serde_json",
