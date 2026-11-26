@@ -33,11 +33,11 @@ benchmark section says otherwise.
 | Memory management      | Boehm GC                    | Boehm GC                     | reference counting                     | reference counting, cycles live until exit |
 | I/O during evaluation  | synchronous                 | synchronous                  | VM suspends into async I/O             | synchronous                             |
 | Store model            | `/nix/store` + SQLite DB    | same as Nix                  | BLAKE3 Merkle DAG (castore) + PathInfo service; NARs computed on demand | `/nix/store` layout + one metadata file per path |
-| Store backends         | local, daemon, binary caches, SSH, S3 | same as Nix          | pluggable (memory, files, object storage, gRPC) | local; binary caches (file, HTTP)  |
-| Daemon protocol        | yes                         | yes, compatible              | partial (via `nix-compat`)             | no                                      |
-| Builder                | goal/worker state machine, sandbox | same, sandbox             | separate build service (OCI / bubblewrap) | thread-pool scheduler, no sandbox    |
-| Substituters / caches  | yes, signed                 | yes                          | yes (serves and consumes NAR/narinfo)  | yes, signed; `copy` writes caches       |
-| Flakes                 | experimental                | experimental                 | no                                     | no                                      |
+| Store backends         | local, daemon, binary caches, SSH, S3 | same as Nix          | pluggable (memory, files, object storage, gRPC) | local, daemon, `file://`/`http(s)://` binary caches, SSH |
+| Daemon protocol        | yes                         | yes, compatible              | partial (via `nix-compat`)             | yes, compatible (server and client, 1.37) |
+| Builder                | goal/worker state machine, sandbox | same, sandbox             | separate build service (OCI / bubblewrap) | thread-pool scheduler, sandbox (macOS `sandbox-exec`, Linux namespaces), remote builders |
+| Substituters / caches  | yes, signed                 | yes                          | yes (serves and consumes NAR/narinfo)  | yes, signed                             |
+| Flakes                 | experimental                | experimental                 | no                                     | yes, lock files compatible with Nix     |
 | Drop-in for `nix`      | —                           | yes                          | no (toolkit)                           | no (subset CLI)                         |
 | nixpkgs `drvPath` parity | reference                 | yes                          | yes for large parts of nixpkgs         | yes for tested attributes (`hello`, `python3`, `git`) |
 
@@ -99,7 +99,7 @@ Nix's single-process, single-machine shape:
 * The evaluator compiles the syntax tree to an IR with resolved slots and
   leaked `&'static` nodes, so thunks are two words and need no reference
   counting of code. It walks that IR directly instead of interpreting
-  bytecode, which keeps the implementation short (4.6k lines for parser,
+  bytecode, which keeps the implementation short (7.8k lines for parser,
   compiler, evaluator and builtins) and the call stack readable in error
   traces.
 * Values are reference counted and 16 bytes wide; a thunk is 40 bytes.
@@ -118,8 +118,10 @@ Nix's single-process, single-machine shape:
   (no referrers index, no transactional multi-path registration).
 * The builder is a ready-queue scheduler over a scoped thread pool; it
   implements the parts of the builder environment that nixpkgs relies on
-  (`passAsFile`, structured attributes as JSON, `impureEnvVars`) and
-  reference scanning, and leaves out sandboxing and remote builders.
+  (`passAsFile`, structured attributes as JSON, `impureEnvVars`),
+  reference scanning, content-addressed and impure derivations, the build
+  sandbox and remote builders. A daemon speaks Nix's worker protocol, so
+  Nix clients can use an oxnix store and oxnix can use a Nix daemon.
 * Substitution fetches whole closures from `file://` and `https://` binary
   caches before building, checking signatures and streaming hashes, and
   remembers lookups on disk with Nix's TTLs (one file per path, where Nix
@@ -149,8 +151,10 @@ benchmark machine and are not part of this table.
 
 ### Choosing between them
 
-* Running NixOS or a production fleet: Nix or Lix. Only they implement the
-  whole surface (daemon, sandbox, substituters, flakes, remote builders).
+* Running NixOS or a production fleet: Nix or Lix. They have years of
+  production use behind the daemon, sandbox, substituters, flakes and remote
+  builders, and cover the rest of the surface (S3 stores, profiles,
+  `nix-env`, the evaluation cache).
   Pick Lix for its community process and quality focus, Nix for being the
   upstream reference.
 * Building infrastructure out of Nix concepts (remote evaluation, alternative

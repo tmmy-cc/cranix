@@ -16,12 +16,12 @@ bootstrap graph hashes identically.
 
 | Crate          | Lines | Contents |
 |----------------|------:|----------|
-| `oxnix-core`   | 1.2k  | Hashes (md5/sha1/sha256/sha512), nix-base32, SRI, store paths and their fingerprints, streaming NAR writer/reader, derivations (ATerm, `hashDerivationModulo`, output paths) |
-| `oxnix-store`  | 2.5k  | Local store, path metadata, `add_text`/`add_path`, reference scanning, closures, GC roots and collection, verification, parallel builder, build sandbox |
-| `oxnix-eval`   | 4.6k  | Lexer/parser, scope-resolving compiler, lazy evaluator, ~110 builtins, `derivationStrict`, printing, JSON |
-| `oxnix-daemon` | 3.5k  | Nix worker protocol (up to 1.37) and serve protocol (2.7): `oxnix daemon`, `oxnix store serve`, clients for `unix://`, `ssh-ng://` and `ssh://` stores, remote builders |
+| `oxnix-core`   | 2.0k  | Hashes (md5/sha1/sha256/sha512), nix-base32, SRI, store paths and their fingerprints, streaming NAR writer/reader, derivations (ATerm, `hashDerivationModulo`, input-addressed, fixed-output, floating and impure outputs), narinfo and ed25519 signatures |
+| `oxnix-store`  | 5.2k  | Local store, path metadata, `add_text`/`add_path`, reference scanning, closures, GC roots and collection, verification, parallel builder, build sandbox, realisations of content-addressed outputs, binary caches and substitution, settings |
+| `oxnix-eval`   | 7.8k  | Lexer/parser, scope-resolving compiler, lazy evaluator, ~120 builtins including `fromTOML` and `toXML`, `derivationStrict`, printing, JSON, error rendering with source snippets and traces |
+| `oxnix-daemon` | 3.8k  | Nix worker protocol (up to 1.37) and serve protocol (2.7): `oxnix daemon`, `oxnix store serve`, clients for `unix://`, `ssh-ng://` and `ssh://` stores, remote builders |
 | `oxnix-fetchers` | 3.0k | Fetchers for files, tarballs, paths, Git and GitHub/GitLab/SourceHut, the fetcher cache, flake registries |
-| `oxnix`        | 1.4k  | CLI, flake commands and installables |
+| `oxnix`        | 2.4k  | CLI, flake commands and installables |
 
 The core crate has no knowledge of the evaluator or the file system layout of
 a store, so it can be reused by tools that only need hashing, NAR or
@@ -91,8 +91,8 @@ x86_64 (and 32-bit ARM builds) with the 32-bit personality. Inside, it is `nixbl
 needed. On macOS it runs under `sandbox-exec` with a profile generated like
 Nix's, honouring `__impureHostDeps` (within `allowed-impure-host-deps`),
 `__sandboxProfile` and `__darwinAllowLocalNetworking`. Fixed-output
-derivations keep network access. In relaxed mode `__noChroot` and
-fixed-output derivations build unconfined. Where the kernel does not allow
+and impure derivations keep network access. In relaxed mode `__noChroot`,
+fixed-output and impure derivations build unconfined. Where the kernel does not allow
 user namespaces, `sandbox-fallback` (default `true`) builds unsandboxed with
 a warning.
 
@@ -196,6 +196,7 @@ target/release/oxnix build tests/build.nix --builders 'ssh-ng://builder@host x86
 
 Commands: `eval` (`--json`, `--raw`, `--lazy`), `instantiate`, `build`
 (`-o`, `--no-link`, `-j`, `-L`, `--keep-failed`), `show-derivation`,
+`realisation info`,
 `hash path|file|convert`, `nar dump|restore`, and
 `store add|path-info|sign|closure|ls|verify|gc|serve` (`path-info --json -r
 --closure-size`, also against a cache with `--store URL`), `copy --to URL` and
@@ -203,7 +204,9 @@ Commands: `eval` (`--json`, `--raw`, `--lazy`), `instantiate`, `build`
 `key generate-secret|convert-secret-to-public`, and `daemon` (`--stdio`,
 `--socket`, `--trusted-users`, `--allowed-users`, `--force-trusted`,
 `--force-untrusted`). Global options: `--store`, `--builders`,
-`-I`, `--arg`, `--argstr`, `--system`, `--pure`, `--option NAME VALUE` (also read from `NIX_CONFIG`),
+`-I`, `--arg`, `--argstr`, `--system`, `--pure`, `--show-trace`,
+`--experimental-features`/`--extra-experimental-features`, `--option NAME VALUE`
+(also read from `NIX_CONFIG`),
 `--sandbox`/`--no-sandbox`, `--timeout`, `--max-silent-time`. `NIX_PATH`
 entries that are absolute paths or `flake:` references (`nixpkgs=flake:nixpkgs`)
 are honoured.
@@ -236,8 +239,12 @@ defaults and `@` patterns, dynamic attributes, `__functor`, `__toString`,
 indented strings, path interpolation, search paths, `<nix/fetchurl.nix>`),
 string contexts, `derivation`/`derivationStrict` with structured attributes,
 `__ignoreNulls`, multiple outputs and fixed-output derivations,
-`builtins.path`/`filterSource`, import from derivation, the local store
-operations listed above, binary caches (narinfo reading and writing,
+`builtins.path`/`filterSource`, import from derivation, `fromTOML` (TOML
+1.0) and `toXML`, content-addressed (floating) and impure derivations
+behind the `ca-derivations` and `impure-derivations` experimental features
+(realisations, resolution of inputs, `text` hashing with
+`dynamic-derivations`), the local store operations listed above, binary
+caches (narinfo reading and writing,
 signatures, substitution and `copy`), the daemon protocol (server and
 client), remote builders over `ssh-ng://` and `ssh://`, the fetchers (`fetchurl`, `fetchTarball`,
 `fetchGit`, `fetchTree` with the types `file`, `tarball`, `path`, `git`,
@@ -252,9 +259,13 @@ expire after `tarball-ttl` (read from `nix.conf`). Archives are decompressed
 with `gzip`, `xz`, `bzip2` or `zstd` and Git repositories are read with the
 `git` command line tool.
 
-Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, content-addressed
-(floating) and impure derivations, `fromTOML`, `toXML`, `unsafeGetAttrPos`
-(returns `null`), and profiles/`nix-env`.
+Errors are printed like Nix 2.24: the position with the surrounding source
+lines, a short trace (all frames with `--show-trace`), and hints such as
+close names for a missing attribute or an undefined variable.
+
+Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
+`git` hashing mode, signed realisations, `unsafeGetAttrPos` (returns
+`null`), and profiles/`nix-env`.
 
 ## Testing
 
@@ -266,6 +277,11 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, content-addr
   derivation hashing, nixpkgs `lib` (including the module system and
   `systems.elaborate`) and the `drvPath`s of `hello`, `python3` and `git`
   from nixpkgs.
+* `crates/oxnix-eval/tests/errors.rs` pins the rendered output of evaluation
+  errors: snippets, traces, hints and colour.
+* `tests/catest.py` builds content-addressed, impure and text-hashed
+  derivations with Nix and with oxnix in the same scratch store location and
+  compares drvPaths, output paths, realisations, rebuilds and messages.
 * `crates/oxnix-daemon/tests/daemon.rs` runs a client against an in-process
   daemon: copying closures, NAR transfer, temporary roots against the
   collector, untrusted clients, remote builds through a daemon socket,
