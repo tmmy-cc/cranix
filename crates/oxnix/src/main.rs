@@ -17,6 +17,7 @@ use oxnix_store::substitute::{http_client, trusted_keys, Substituters};
 use oxnix_store::Store;
 
 mod remote;
+mod flake_cmd;
 
 #[cfg(not(feature = "dhat-heap"))]
 #[global_allocator]
@@ -30,9 +31,13 @@ const USAGE: &str = "\
 usage: oxnix [global options] <command> [args]
 
 commands:
-  eval [FILE | --expr E] [-A ATTR] [--json | --raw] [--lazy]
+  eval [FILE | --expr E | INSTALLABLE] [-A ATTR] [--json | --raw] [--lazy]
   instantiate [FILE | --expr E] [-A ATTR]       write .drv files, print their paths
-  build [FILE | --expr E] [-A ATTR] [-o LINK | --no-link] [-j N] [-L] [--keep-failed]
+  build [FILE | --expr E | INSTALLABLE] [-A ATTR] [-o LINK | --no-link] [-j N] [-L] [--keep-failed]
+  run INSTALLABLE [-- ARGS]                      build and run a flake app or package
+  shell INSTALLABLE... [-c CMD ARGS]             shell with the packages on PATH
+  develop [INSTALLABLE] [-c CMD ARGS]            shell with a derivation's build environment
+  flake metadata|show|lock|update|check|init|new [FLAKE] [--json]
   show-derivation DRV                            print a derivation as JSON
   realisation info [FILE | --expr E | DRV^OUT...] [-A ATTR] [--json]
   hash path|file PATH [--type ALGO] [--base16|--base32|--sri]
@@ -70,6 +75,14 @@ global options:
   --experimental-features FEATURES, --extra-experimental-features FEATURES
                     set or extend the enabled experimental features (also read
                     from nix.conf and $NIX_CONFIG), e.g. ca-derivations
+
+flake options (eval, build, run, shell, develop, flake):
+  --impure, --no-write-lock-file, --no-update-lock-file, --recreate-lock-file,
+  --commit-lock-file, --update-input PATH, --override-input PATH REF,
+  --override-flake FROM TO, --no-registries, --refresh, --option NAME VALUE
+
+installables are flake references with an optional attribute path, e.g.
+  .#hello, nixpkgs#hello, github:NixOS/nixpkgs/nixos-24.05#hello
 ";
 
 struct Cli {
@@ -77,6 +90,8 @@ struct Cli {
     remote: Option<oxnix_daemon::client::StoreUri>,
     builders: Option<String>,
     search: Vec<(String, String)>,
+    /// `prefix=flake:ref` search path entries, resolved when evaluating.
+    flake_search: Vec<(String, String)>,
     args: Vec<(String, ArgVal)>,
     system: String,
     pure: bool,
@@ -101,12 +116,40 @@ fn parse_search(s: &str) -> Option<(String, String)> {
     path.starts_with('/').then_some((prefix, path))
 }
 
+/// Splits `NIX_PATH` at colons that do not belong to a `flake:` or URL
+/// scheme.
+fn split_nix_path(np: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in np.split(':') {
+        match out.last_mut() {
+            Some(last) if last.ends_with("flake") || last.ends_with("https") || last.ends_with("http") || part.starts_with("//") => {
+                last.push(':');
+                last.push_str(part);
+            }
+            _ => out.push(part.to_string()),
+        }
+    }
+    out.into_iter().filter(|s| !s.is_empty()).collect()
+}
+
+impl Cli {
+    fn add_search(&mut self, s: &str) {
+        let (prefix, path) = s.split_once('=').unwrap_or(("", s));
+        if path.starts_with("flake:") {
+            self.flake_search.push((prefix.to_string(), path.to_string()));
+        } else {
+            self.search.extend(parse_search(s));
+        }
+    }
+}
+
 fn parse_cli() -> Result<Cli, String> {
     let mut cli = Cli {
         store: None,
         remote: None,
         builders: None,
         search: Vec::new(),
+        flake_search: Vec::new(),
         args: Vec::new(),
         system: host_system(),
         pure: false,
@@ -142,7 +185,7 @@ fn parse_cli() -> Result<Cli, String> {
             "--builders" => cli.builders = Some(val("--builders")?),
             "-I" => {
                 let v = val("-I")?;
-                cli.search.extend(parse_search(&v));
+                cli.add_search(&v);
             }
             "--arg" => {
                 let n = val("--arg")?;
@@ -196,7 +239,9 @@ fn parse_cli() -> Result<Cli, String> {
         }
     }
     if let Ok(np) = std::env::var("NIX_PATH") {
-        cli.search.extend(np.split(':').filter(|s| !s.is_empty()).filter_map(parse_search));
+        for e in split_nix_path(&np) {
+            cli.add_search(&e);
+        }
     }
     Ok(cli)
 }
@@ -302,6 +347,8 @@ fn run() -> Result<(), String> {
             let builders = cli.builders.clone().unwrap_or_else(remote::default_builders);
             remote::cmd_daemon(open_store(&cli)?, &args, build_options(&cli), &builders)
         }
+        "flake" => flake_cmd::cmd_flake(&cli, &args),
+        "run" | "shell" | "develop" => flake_cmd::cmd_run_like(&cli, &cmd, &args),
         c => Err(format!("unknown command '{c}'\n{USAGE}")),
     }
 }
@@ -342,9 +389,11 @@ fn parse_target(args: &[String], value_flags: &[&str]) -> Result<Target, String>
 }
 
 fn new_eval(cli: &Cli) -> Result<Rc<Eval>, String> {
+    let mut search_path = cli.search.clone();
+    search_path.extend(flake_cmd::resolve_flake_search(cli, &cli.flake_search));
     let store = open_store(cli)?;
     let opts = Options {
-        search_path: cli.search.clone(),
+        search_path,
         system: cli.system.clone(),
         pure: cli.pure,
         trace_verbose: false,
@@ -424,7 +473,12 @@ fn auto_call(ev: &Eval, cli: &Cli, v: Value) -> oxnix_eval::R<Value> {
 }
 
 fn cmd_eval(cli: &Cli, args: &[String]) -> Result<(), String> {
-    let t = parse_target(args, &[])?;
+    let mut args = args.to_vec();
+    let flags = flake_cmd::take_flake_flags(&mut args)?;
+    let t = parse_target(&args, &[])?;
+    if let Some(spec) = t.file.as_deref().filter(|f| t.expr.is_none() && flake_cmd::is_installable(f)) {
+        return flake_cmd::cmd_eval(cli, spec, &flags, t.flags.contains("--json"), t.flags.contains("--raw"));
+    }
     let ev = new_eval(cli)?;
     let r = (|| {
         let v = eval_target(&ev, cli, &t)?;
@@ -485,10 +539,19 @@ fn collect_drvs(ev: &Eval, v: &Value, out: &mut Vec<(StorePath, String)>) -> oxn
 }
 
 fn cmd_instantiate(cli: &Cli, args: &[String], build: bool) -> Result<(), String> {
-    let t = parse_target(args, &["-o", "--out-link", "-j", "--max-jobs", "--cores"])?;
-    let ev = new_eval(cli)?;
+    let mut args = args.to_vec();
+    let flags = flake_cmd::take_flake_flags(&mut args)?;
+    let t = parse_target(&args, &["-o", "--out-link", "-j", "--max-jobs", "--cores"])?;
+    let installable = t.file.clone().filter(|f| t.expr.is_none() && flake_cmd::is_installable(f));
+    let ev = match &installable {
+        Some(_) => flake_cmd::new_eval(cli, flags.impure)?,
+        None => new_eval(cli)?,
+    };
     let mut drvs = Vec::new();
-    let r = eval_target(&ev, cli, &t).and_then(|v| collect_drvs(&ev, &v, &mut drvs));
+    let r = match &installable {
+        Some(spec) => flake_cmd::eval_installable(&ev, cli, &flags, spec, flake_cmd::Kind::Build).and_then(|s| collect_drvs(&ev, &s.value, &mut drvs)),
+        None => eval_target(&ev, cli, &t).and_then(|v| collect_drvs(&ev, &v, &mut drvs)),
+    };
     r.map_err(|e| render_error(&ev, cli, &e))?;
     if !build {
         for (d, _) in &drvs {
@@ -512,15 +575,18 @@ fn cmd_instantiate(cli: &Cli, args: &[String], build: bool) -> Result<(), String
     opts.print_logs = t.flags.contains("-L") || t.flags.contains("--print-build-logs");
     opts.keep_failed |= t.flags.contains("-K") || t.flags.contains("--keep-failed");
     let paths: Vec<StorePath> = drvs.iter().map(|(d, _)| d.clone()).collect();
-    let (res, mut session) = match &cli.remote {
-        Some(u) => {
-            let mut s = remote::Session::open(u)?;
-            (s.realise(&ev.store, &paths, &opts)?, Some(s))
-        }
-        None => {
-            remote::configure_builders(&mut opts, &cli.builders.clone().unwrap_or_else(remote::default_builders))?;
-            (ev.store.realise(&paths, &opts)?, None)
-        }
+    let (res, mut session) = match installable.as_ref().and_then(|_| flake_cmd::present_outputs(&ev, &paths)) {
+        Some(r) => (r, None),
+        None => match &cli.remote {
+            Some(u) => {
+                let mut s = remote::Session::open(u)?;
+                (s.realise(&ev.store, &paths, &opts)?, Some(s))
+            }
+            None => {
+                remote::configure_builders(&mut opts, &cli.builders.clone().unwrap_or_else(remote::default_builders))?;
+                (ev.store.realise(&paths, &opts)?, None)
+            }
+        },
     };
     let link_base = t.opts.iter().find(|(k, _)| k == "-o" || k == "--out-link").map(|(_, v)| v.clone()).unwrap_or("result".into());
     let no_link = t.flags.contains("--no-link");
