@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compares oxnix's fetchers and flakes with real Nix.
+"""Compares cranix's fetchers and flakes with real Nix.
 
 Builds local fixtures (a Git repository with an export-ignore attribute,
 symlinks and an executable, a dirty working tree, a tarball with a single
@@ -18,7 +18,7 @@ top-level directory and an empty directory) and checks that
 With --network it also fetches from GitHub (remote Git, shallow Git,
 github: inputs, archive tarballs) and locks a flake with GitHub inputs.
 
-Set OXNIX to the oxnix binary (default: target/release/oxnix).
+Set CRANIX to the cranix binary (default: target/release/cranix).
 """
 
 import json
@@ -29,7 +29,7 @@ import sys
 import tempfile
 
 here = os.path.dirname(os.path.abspath(__file__))
-oxnix = os.environ.get("OXNIX", os.path.join(here, "..", "target", "release", "oxnix"))
+cranix = os.environ.get("CRANIX", os.path.join(here, "..", "target", "release", "cranix"))
 network = "--network" in sys.argv
 failures = 0
 passed = 0
@@ -60,14 +60,14 @@ def check(name, want, got, detail=""):
         passed += 1
     else:
         failures += 1
-        print(f"FAIL {name}{detail}\n  nix:   {want}\n  oxnix: {got}")
+        print(f"FAIL {name}{detail}\n  nix:   {want}\n  cranix: {got}")
 
 
 def compare_eval(name, expr_file, cwd):
     nix, np = run(["nix", "eval", "--impure", "--json", "-f", expr_file], cwd)
-    ox, op = run([oxnix, "eval", "--json", expr_file], cwd)
+    ox, op = run([cranix, "eval", "--json", expr_file], cwd)
     if nix is None or ox is None:
-        check(name, nix, ox, f"\n  nix stderr: {np.stderr[-400:]}\n  oxnix stderr: {op.stderr[-400:]}")
+        check(name, nix, ox, f"\n  nix stderr: {np.stderr[-400:]}\n  cranix stderr: {op.stderr[-400:]}")
         return
     a, b = json.loads(nix), json.loads(ox)
     for k in a:
@@ -190,7 +190,7 @@ def flake_tests(tmp):
 """})
     copy = os.path.join(tmp, "top-nix")
     shutil.copytree(top, copy, symlinks=True)
-    _, p = run([oxnix, "flake", "lock"], top)
+    _, p = run([cranix, "flake", "lock"], top)
     if p.returncode != 0:
         check("flake lock", "ok", p.stderr)
         return
@@ -207,16 +207,16 @@ def flake_tests(tmp):
     sh(["git", "commit", "-qm", "lock"], top)
     for attr in [".#msg", ".#v", ".#x", ".#selfInfo", ".#names"]:
         nix, _ = run(["nix", "eval", "--json", attr], top)
-        ox, _ = run([oxnix, "eval", "--json", attr], top)
+        ox, _ = run([cranix, "eval", "--json", attr], top)
         check(f"eval {attr}", nix, ox)
     nm, _ = run(["nix", "flake", "metadata", "--json"], top)
-    om, _ = run([oxnix, "flake", "metadata", "--json"], top)
+    om, _ = run([cranix, "flake", "metadata", "--json"], top)
     check("flake metadata --json", nm and json.loads(nm), om and json.loads(om))
     e = (f'let f = builtins.getFlake "git+file://{top}"; in '
          '{ inherit (f) rev revCount lastModified lastModifiedDate narHash shortRev submodules msg; '
          'o = f.outPath; si = builtins.attrNames f.sourceInfo; d = f.inputs.dep.outPath; }')
     nix, _ = run(["nix", "eval", "--impure", "--json", "--expr", e], top)
-    ox, _ = run([oxnix, "eval", "--json", "--expr", e], top)
+    ox, _ = run([cranix, "eval", "--json", "--expr", e], top)
     check("getFlake", nix and json.loads(nix), ox and json.loads(ox))
 
 
@@ -271,7 +271,7 @@ def show_tests(tmp):
              ["--json"], ["--json", "--all-systems"], ["--json", "--legacy", "--all-systems"]]
     for f in flags:
         n = subprocess.run(["nix", "flake", "show", ref] + f, capture_output=True, text=True, cwd=tmp)
-        o = subprocess.run([oxnix, "flake", "show", ref] + f, capture_output=True, text=True, cwd=tmp)
+        o = subprocess.run([cranix, "flake", "show", ref] + f, capture_output=True, text=True, cwd=tmp)
         nerr = [l for l in strip_ansi(n.stderr).splitlines() if l.strip() and not l.startswith("evaluating")]
         oerr = [l for l in strip_ansi(o.stderr).splitlines() if l.strip()]
         name = "flake show " + " ".join(f)
@@ -281,7 +281,7 @@ def show_tests(tmp):
     for tz in ["UTC", "Asia/Tokyo", "America/New_York"]:
         env = dict(os.environ, TZ=tz)
         n = subprocess.run(["nix", "flake", "metadata", ref], capture_output=True, text=True, env=env)
-        o = subprocess.run([oxnix, "flake", "metadata", ref], capture_output=True, text=True, env=env)
+        o = subprocess.run([cranix, "flake", "metadata", ref], capture_output=True, text=True, env=env)
         check(f"flake metadata TZ={tz}", n.stdout, o.stdout)
 
 
@@ -290,7 +290,7 @@ def nixpkgs_tests(tmp):
     if nix is None:
         print("skipping nixpkgs#hello: nix cannot resolve nixpkgs")
         return
-    ox, p = run([oxnix, "eval", "nixpkgs#hello.drvPath"], tmp)
+    ox, p = run([cranix, "eval", "nixpkgs#hello.drvPath"], tmp)
     check("eval nixpkgs#hello.drvPath", nix, ox, f"\n  {p.stderr[-400:]}")
 
 
@@ -329,14 +329,14 @@ let f = x: builtins.removeAttrs x [ "outPath" ] // {{ o = x.outPath; }}; in {{
 """ % rev)
     copy = fl + "-nix"
     shutil.copytree(fl, copy)
-    run([oxnix, "flake", "lock"], fl)
+    run([cranix, "flake", "lock"], fl)
     run(["nix", "flake", "lock"], copy)
     with open(os.path.join(fl, "flake.lock")) as a, open(os.path.join(copy, "flake.lock")) as b:
         check("network flake.lock", b.read().replace(copy, fl), a.read())
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix="oxnix-flaketest-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="cranix-flaketest-") as tmp:
         tmp = os.path.realpath(tmp)
         fetcher_tests(tmp)
         flake_tests(tmp)

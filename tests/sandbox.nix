@@ -1,4 +1,4 @@
-# Sandbox isolation test, driven by crates/oxnix/tests/sandbox.rs.
+# Sandbox isolation test, driven by crates/cranix/tests/sandbox.rs.
 #
 # `probe` records whether its builder could read `secret` (a host file
 # outside its closure) and connect to `port` on the host's loopback

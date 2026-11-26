@@ -1,0 +1,12 @@
+[package]
+name = "cranix-daemon"
+description = "Nix worker protocol: daemon, client store and remote builders"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cranix-core.workspace = true
+cranix-store.workspace = true
+libc.workspace = true
+serde_json.workspace = true

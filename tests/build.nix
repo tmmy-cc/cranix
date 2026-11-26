@@ -1,4 +1,4 @@
-# Build test for `oxnix --store DIR build -f tests/build.nix`.
+# Build test for `cranix --store DIR build -f tests/build.nix`.
 let
   sh = args: name: extra:
     derivation ({

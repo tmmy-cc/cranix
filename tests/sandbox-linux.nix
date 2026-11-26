@@ -1,6 +1,6 @@
-# Linux sandbox check run by an unprivileged user: builds oxnix from this
+# Linux sandbox check run by an unprivileged user: builds cranix from this
 # checkout with nixpkgs, then, inside a Nix build (as the build user, with
-# no capabilities on the host), runs sandboxed oxnix builds of
+# no capabilities on the host), runs sandboxed cranix builds of
 # tests/build.nix and tests/sandbox.nix and checks what they could reach.
 #
 # Run it with tests/sandbox-linux.sh, which picks a Linux builder.
@@ -13,8 +13,8 @@ let
   inherit (pkgs) lib busybox;
   bash = "${pkgs.bash}/bin/bash";
 
-  oxnix = pkgs.rustPlatform.buildRustPackage {
-    pname = "oxnix";
+  cranix = pkgs.rustPlatform.buildRustPackage {
+    pname = "cranix";
     version = "0.1.0";
     src = lib.fileset.toSource {
       root = ../.;
@@ -23,14 +23,14 @@ let
     cargoLock.lockFile = ../Cargo.lock;
     # nixpkgs may ship a rustc older than the workspace's rust-version;
     # the code does not depend on the difference.
-    cargoBuildFlags = [ "-p" "oxnix" "--ignore-rust-version" ];
+    cargoBuildFlags = [ "-p" "cranix" "--ignore-rust-version" ];
     doCheck = false;
   };
 in
-pkgs.runCommand "oxnix-sandbox-check-${system}" { tests = ../tests; } ''
+pkgs.runCommand "cranix-sandbox-check-${system}" { tests = ../tests; } ''
   set -eu
   ox() {
-    ${oxnix}/bin/oxnix --store /tmp/s build --no-link \
+    ${cranix}/bin/cranix --store /tmp/s build --no-link \
       --option sandbox true --option sandbox-fallback false \
       --option sandbox-paths "/nix/store /bin=${busybox}/bin" "$@"
   }

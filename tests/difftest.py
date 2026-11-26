@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Differential test: compares `oxnix eval --json` with
+"""Differential test: compares `cranix eval --json` with
 `nix-instantiate --eval --strict --json` for each expression in exprs.nix.
 
 Expressions are separated by lines consisting of `#---`.
@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 here = os.path.dirname(os.path.abspath(__file__))
-oxnix = os.environ.get("OXNIX", os.path.join(here, "..", "target", "debug", "oxnix"))
+cranix = os.environ.get("CRANIX", os.path.join(here, "..", "target", "debug", "cranix"))
 
 
 def run(cmd):
@@ -24,14 +24,14 @@ def main():
     passed = failed = 0
     for e in exprs:
         want, wp = run(["nix-instantiate", "--eval", "--strict", "--json", "-E", e])
-        got, gp = run([oxnix, "eval", "--json", "--expr", e])
+        got, gp = run([cranix, "eval", "--json", "--expr", e])
         if want == got:
             passed += 1
         else:
             failed += 1
             print(f"FAIL: {e}")
             print(f"  nix:   {want} {wp.stderr.strip()[:300] if want == 'ERROR' else ''}")
-            print(f"  oxnix: {got} {gp.stderr.strip()[:300] if got == 'ERROR' else ''}")
+            print(f"  cranix: {got} {gp.stderr.strip()[:300] if got == 'ERROR' else ''}")
     print(f"passed {passed}, failed {failed}")
     sys.exit(1 if failed else 0)
 

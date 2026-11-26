@@ -116,6 +116,76 @@ dependencies = [
 ]
 
 [[package]]
+name = "cranix"
+version = "0.1.0"
+dependencies = [
+ "cranix-core",
+ "cranix-daemon",
+ "cranix-eval",
+ "cranix-fetchers",
+ "cranix-store",
+ "dhat",
+ "libc",
+ "mimalloc",
+ "serde_json",
+]
+
+[[package]]
+name = "cranix-core"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "md-5",
+ "sha1",
+ "sha2",
+]
+
+[[package]]
+name = "cranix-daemon"
+version = "0.1.0"
+dependencies = [
+ "cranix-core",
+ "cranix-store",
+ "libc",
+ "serde_json",
+]
+
+[[package]]
+name = "cranix-eval"
+version = "0.1.0"
+dependencies = [
+ "cranix-core",
+ "cranix-fetchers",
+ "cranix-store",
+ "regex",
+ "serde_json",
+]
+
+[[package]]
+name = "cranix-fetchers"
+version = "0.1.0"
+dependencies = [
+ "cranix-core",
+ "cranix-store",
+ "libc",
+ "regex",
+ "serde_json",
+]
+
+[[package]]
+name = "cranix-store"
+version = "0.1.0"
+dependencies = [
+ "bzip2",
+ "cranix-core",
+ "libc",
+ "lzma-sys",
+ "serde_json",
+ "xz2",
+ "zstd",
+]
+
+[[package]]
 name = "crypto-common"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -354,76 +424,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
 dependencies = [
  "memchr",
-]
-
-[[package]]
-name = "oxnix"
-version = "0.1.0"
-dependencies = [
- "dhat",
- "libc",
- "mimalloc",
- "oxnix-core",
- "oxnix-daemon",
- "oxnix-eval",
- "oxnix-fetchers",
- "oxnix-store",
- "serde_json",
-]
-
-[[package]]
-name = "oxnix-core"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "md-5",
- "sha1",
- "sha2",
-]
-
-[[package]]
-name = "oxnix-daemon"
-version = "0.1.0"
-dependencies = [
- "libc",
- "oxnix-core",
- "oxnix-store",
- "serde_json",
-]
-
-[[package]]
-name = "oxnix-eval"
-version = "0.1.0"
-dependencies = [
- "oxnix-core",
- "oxnix-fetchers",
- "oxnix-store",
- "regex",
- "serde_json",
-]
-
-[[package]]
-name = "oxnix-fetchers"
-version = "0.1.0"
-dependencies = [
- "libc",
- "oxnix-core",
- "oxnix-store",
- "regex",
- "serde_json",
-]
-
-[[package]]
-name = "oxnix-store"
-version = "0.1.0"
-dependencies = [
- "bzip2",
- "libc",
- "lzma-sys",
- "oxnix-core",
- "serde_json",
- "xz2",
- "zstd",
 ]
 
 [[package]]

@@ -1,0 +1,13 @@
+[package]
+name = "cranix-fetchers"
+description = "Source fetchers (tarballs, files, paths, Git, GitHub/GitLab/SourceHut), the fetcher cache and flake registries"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cranix-core.workspace = true
+cranix-store.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+libc.workspace = true

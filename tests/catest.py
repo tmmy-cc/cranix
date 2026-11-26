@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Content-addressed derivations test: compares oxnix with Nix on tests/ca.nix.
+"""Content-addressed derivations test: compares cranix with Nix on tests/ca.nix.
 
 Checks that drvPaths, `show-derivation` and the output paths and
 realisations of a build match `nix build` in a scratch store at the same
@@ -19,7 +19,7 @@ import sys
 import tempfile
 
 here = os.path.dirname(os.path.abspath(__file__))
-oxnix = os.environ.get("OXNIX", os.path.join(here, "..", "target", "debug", "oxnix"))
+cranix = os.environ.get("CRANIX", os.path.join(here, "..", "target", "debug", "cranix"))
 features = "ca-derivations dynamic-derivations impure-derivations nix-command"
 system = {"arm64": "aarch64", "x86_64": "x86_64"}.get(platform.machine(), platform.machine()) + (
     "-darwin" if sys.platform == "darwin" else "-linux"
@@ -36,7 +36,7 @@ def run(cmd, env=None, stderr=False):
 
 def progress(stderr):
     """The build and resolution messages, without Nix's trailing `...` and
-    oxnix's `(n/total)` counter."""
+    cranix's `(n/total)` counter."""
     out = []
     for line in stderr.splitlines():
         if line.startswith("building '") or line.startswith("resolved derivation: "):
@@ -49,7 +49,7 @@ def check(what, want, got):
         print(f"ok: {what}")
     else:
         failures.append(what)
-        print(f"FAIL: {what}\n  nix:   {want}\n  oxnix: {got}")
+        print(f"FAIL: {what}\n  nix:   {want}\n  cranix: {got}")
 
 
 def rmtree(d):
@@ -59,10 +59,10 @@ def rmtree(d):
 
 
 def main():
-    tmp = os.path.realpath(tempfile.mkdtemp(prefix="oxnix-catest-"))
+    tmp = os.path.realpath(tempfile.mkdtemp(prefix="cranix-catest-"))
     nix_env = dict(os.environ, NIX_CONFIG=f"extra-experimental-features = {features}")
     ox_env = dict(os.environ, XDG_DATA_HOME=os.path.join(tmp, "xdg"))
-    ox = [oxnix, "--extra-experimental-features", features]
+    ox = [cranix, "--extra-experimental-features", features]
     log = os.path.join(tmp, "b-builds")
     args = ["--argstr", "system", system, "--argstr", "log", log]
     attrs = ["a", "b", "c", "multi", "text", "textFixed", "i"]

@@ -1,0 +1,25 @@
+[package]
+name = "cranix"
+description = "Command line interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cranix"
+path = "src/main.rs"
+
+[dependencies]
+cranix-core.workspace = true
+cranix-store.workspace = true
+cranix-eval.workspace = true
+cranix-daemon.workspace = true
+cranix-fetchers.workspace = true
+libc.workspace = true
+serde_json.workspace = true
+mimalloc.workspace = true
+dhat = { version = "0.3", optional = true }
+
+[features]
+# Heap profiling: writes dhat-heap.json, viewable with dhat's dh_view.html.
+dhat-heap = ["dep:dhat"]

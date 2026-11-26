@@ -1,11 +1,12 @@
-# oxnix
+# cranix
 
 A Rust implementation of the Nix package manager: the Nix language, store
 derivations, the NAR format, a local store with garbage collection, and a
 parallel derivation builder. It is written from the specification of Nix's
 observable behaviour (store path fingerprints, ATerm, NAR, evaluation
 semantics) and designed around Rust idioms; it is not a line-by-line
-translation of the C++ code base.
+translation of the C++ code base. The name joins the EU Cyber Resilience
+Act (CRA) and *Kranich*, German for crane.
 
 Its output is bit-compatible with Nix 2.24: evaluating
 `(import <nixpkgs> {}).hello.drvPath` produces the same `.drv` path as
@@ -16,12 +17,12 @@ bootstrap graph hashes identically.
 
 | Crate          | Lines | Contents |
 |----------------|------:|----------|
-| `oxnix-core`   | 2.0k  | Hashes (md5/sha1/sha256/sha512), nix-base32, SRI, store paths and their fingerprints, streaming NAR writer/reader, derivations (ATerm, `hashDerivationModulo`, input-addressed, fixed-output, floating and impure outputs), narinfo and ed25519 signatures |
-| `oxnix-store`  | 5.2k  | Local store, path metadata, `add_text`/`add_path`, reference scanning, closures, GC roots and collection, verification, parallel builder, build sandbox, realisations of content-addressed outputs, binary caches and substitution, settings |
-| `oxnix-eval`   | 7.8k  | Lexer/parser, scope-resolving compiler, lazy evaluator, ~120 builtins including `fromTOML` and `toXML`, `derivationStrict`, printing, JSON, error rendering with source snippets and traces |
-| `oxnix-daemon` | 3.8k  | Nix worker protocol (up to 1.37) and serve protocol (2.7): `oxnix daemon`, `oxnix store serve`, clients for `unix://`, `ssh-ng://` and `ssh://` stores, remote builders |
-| `oxnix-fetchers` | 3.0k | Fetchers for files, tarballs, paths, Git and GitHub/GitLab/SourceHut, the fetcher cache, flake registries |
-| `oxnix`        | 2.4k  | CLI, flake commands and installables |
+| `cranix-core`   | 2.0k  | Hashes (md5/sha1/sha256/sha512), nix-base32, SRI, store paths and their fingerprints, streaming NAR writer/reader, derivations (ATerm, `hashDerivationModulo`, input-addressed, fixed-output, floating and impure outputs), narinfo and ed25519 signatures |
+| `cranix-store`  | 5.2k  | Local store, path metadata, `add_text`/`add_path`, reference scanning, closures, GC roots and collection, verification, parallel builder, build sandbox, realisations of content-addressed outputs, binary caches and substitution, settings |
+| `cranix-eval`   | 7.8k  | Lexer/parser, scope-resolving compiler, lazy evaluator, ~120 builtins including `fromTOML` and `toXML`, `derivationStrict`, printing, JSON, error rendering with source snippets and traces |
+| `cranix-daemon` | 3.8k  | Nix worker protocol (up to 1.37) and serve protocol (2.7): `cranix daemon`, `cranix store serve`, clients for `unix://`, `ssh-ng://` and `ssh://` stores, remote builders |
+| `cranix-fetchers` | 3.0k | Fetchers for files, tarballs, paths, Git and GitHub/GitLab/SourceHut, the fetcher cache, flake registries |
+| `cranix`        | 2.4k  | CLI, flake commands and installables |
 
 The core crate has no knowledge of the evaluator or the file system layout of
 a store, so it can be reused by tools that only need hashing, NAR or
@@ -55,7 +56,7 @@ memory is 15–25% below Nix 2.24 and evaluation time is on par.
 
 **Store.** A store has a *logical* directory (the one baked into hashes) and
 a *physical* one. By default the logical directory is `/nix/store` and
-objects live below `~/.local/share/oxnix/nix/store` (a chroot store), so
+objects live below `~/.local/share/cranix/nix/store` (a chroot store), so
 evaluation results are identical to a regular Nix install without needing
 root. `--store DIR` selects a store whose logical and physical directories
 coincide, which is what building requires.
@@ -109,7 +110,7 @@ Nix's fingerprint, or be content-addressed. `builtins.storePath` substitutes
 missing paths the same way. Caches hold `/nix/store` paths, so substitution
 applies to the default chroot store. HTTP requests are retried on
 connection errors, 408, 429 and 5xx (`download-attempts`), and take
-credentials from `netrc-file` (default `~/.config/oxnix/netrc`). Lookups,
+credentials from `netrc-file` (default `~/.config/cranix/netrc`). Lookups,
 including misses, are remembered per cache under the store's
 `narinfo-cache` directory for `narinfo-cache-positive-ttl` (30 days) and
 `narinfo-cache-negative-ttl` (1 hour). `copy --to` uploads each NAR before
@@ -117,14 +118,14 @@ the narinfo that names it, so an interrupted upload never leaves a narinfo
 without its NAR.
 
 Settings use `nix.conf` syntax and are read from
-`~/.config/oxnix/oxnix.conf`, then `$OXNIX_CONFIG`, then `--option NAME
+`~/.config/cranix/cranix.conf`, then `$CRANIX_CONFIG`, then `--option NAME
 VALUE` (or `--NAME VALUE`, `--[no-]NAME`): `substituters`,
 `trusted-public-keys`, `require-sigs`, `substitute`, `secret-key-files`,
 `max-substitution-jobs`, `narinfo-cache-positive-ttl`,
 `narinfo-cache-negative-ttl`, `netrc-file` and `download-attempts`, each list
 also as `extra-NAME`.
 
-**Daemon and remote builders.** `oxnix daemon` serves a store to Nix
+**Daemon and remote builders.** `cranix daemon` serves a store to Nix
 clients over a Unix socket (or stdin/stdout with `--stdio`, which is what
 `ssh-ng://` runs on the far side), one thread per client. It speaks the
 worker protocol of Nix 2.24 (protocol 1.37): framed NAR transfers, log
@@ -140,7 +141,7 @@ second request for it waits and then finds it built. The daemon's own user and
 only (their names are checked against their contents) and cannot build
 input-addressed derivations with `BuildDerivation`.
 
-`oxnix store serve [--write]` (also `oxnix --serve`, matching
+`cranix store serve [--write]` (also `cranix --serve`, matching
 `nix-store --serve`) speaks the serve protocol of `ssh://` stores and
 builders, as client and server. As in Nix, `localhost` in an `ssh://` or
 `ssh-ng://` URI runs the remote command directly, without ssh.
@@ -163,35 +164,35 @@ cargo build --release
 ```
 
 ```bash
-target/release/oxnix eval --expr '(import <nixpkgs> {}).hello.drvPath' -I nixpkgs=/path/to/nixpkgs
+target/release/cranix eval --expr '(import <nixpkgs> {}).hello.drvPath' -I nixpkgs=/path/to/nixpkgs
 ```
 
 ```bash
-target/release/oxnix --store ~/oxstore build tests/build.nix -j 8 -L
+target/release/cranix --store ~/oxstore build tests/build.nix -j 8 -L
 ```
 
 ```bash
-target/release/oxnix build --expr '(import <nixpkgs> {}).hello' -I nixpkgs=/path/to/nixpkgs
+target/release/cranix build --expr '(import <nixpkgs> {}).hello' -I nixpkgs=/path/to/nixpkgs
 ```
 
 ```bash
-target/release/oxnix copy --to 'file:///tmp/cache?compression=zstd&secret-key=/path/to/key' ./result
+target/release/cranix copy --to 'file:///tmp/cache?compression=zstd&secret-key=/path/to/key' ./result
 ```
 
 ```bash
-target/release/oxnix --store ~/oxstore daemon --socket /tmp/oxnix.sock
+target/release/cranix --store ~/oxstore daemon --socket /tmp/cranix.sock
 ```
 
 ```bash
-nix-store --store "unix:///tmp/oxnix.sock?store=$HOME/oxstore/store" -q --references PATH
+nix-store --store "unix:///tmp/cranix.sock?store=$HOME/oxstore/store" -q --references PATH
 ```
 
 ```bash
-target/release/oxnix --store daemon build tests/build.nix
+target/release/cranix --store daemon build tests/build.nix
 ```
 
 ```bash
-target/release/oxnix build tests/build.nix --builders 'ssh-ng://builder@host x86_64-linux - 4'
+target/release/cranix build tests/build.nix --builders 'ssh-ng://builder@host x86_64-linux - 4'
 ```
 
 Commands: `eval` (`--json`, `--raw`, `--lazy`), `instantiate`, `build`
@@ -222,14 +223,14 @@ Flake evaluation is pure unless `--impure` is given; the lock flags of Nix
 are already in the host store, so they work with the default chroot store.
 
 ```bash
-target/release/oxnix eval nixpkgs#hello.drvPath
-target/release/oxnix flake lock && target/release/oxnix flake metadata
+target/release/cranix eval nixpkgs#hello.drvPath
+target/release/cranix flake lock && target/release/cranix flake metadata
 ```
 
 macOS has no shell in the sandbox unless one is listed:
 
 ```bash
-target/release/oxnix --store ~/oxstore build tests/build.nix --option sandbox true --option sandbox-paths "/bin/sh /bin/bash /bin/cat /bin/mkdir"
+target/release/cranix --store ~/oxstore build tests/build.nix --option sandbox true --option sandbox-paths "/bin/sh /bin/bash /bin/cat /bin/mkdir"
 ```
 
 ## Scope
@@ -272,17 +273,17 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
 * `cargo test` runs unit tests that pin hashes, store paths and `.drv` paths
   to values produced by Nix.
 * `tests/difftest.py` evaluates every expression in `tests/exprs.nix` with
-  both `nix-instantiate --eval --strict --json` and `oxnix eval --json` and
+  both `nix-instantiate --eval --strict --json` and `cranix eval --json` and
   compares the output. The corpus covers the language, the builtins,
   derivation hashing, nixpkgs `lib` (including the module system and
   `systems.elaborate`) and the `drvPath`s of `hello`, `python3` and `git`
   from nixpkgs.
-* `crates/oxnix-eval/tests/errors.rs` pins the rendered output of evaluation
+* `crates/cranix-eval/tests/errors.rs` pins the rendered output of evaluation
   errors: snippets, traces, hints and colour.
 * `tests/catest.py` builds content-addressed, impure and text-hashed
-  derivations with Nix and with oxnix in the same scratch store location and
+  derivations with Nix and with cranix in the same scratch store location and
   compares drvPaths, output paths, realisations, rebuilds and messages.
-* `crates/oxnix-daemon/tests/daemon.rs` runs a client against an in-process
+* `crates/cranix-daemon/tests/daemon.rs` runs a client against an in-process
   daemon: copying closures, NAR transfer, temporary roots against the
   collector, untrusted clients, remote builds through a daemon socket,
   concurrent clients building overlapping graphs, and every command of the
@@ -297,7 +298,7 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
 * `tests/build.nix` exercises the builder: parallel leaves, references,
   `passAsFile`, multiple outputs and a fixed-output derivation.
 * `tests/http-cache.sh` uploads a closure to a local HTTP cache (the
-  `cache-server` example of `oxnix-store`) and reads it back with
+  `cache-server` example of `cranix-store`) and reads it back with
   `nix path-info`, `nix store verify` and `nix copy`. The same server backs
   the `http_cache` integration test run by `cargo test`.
 * `cargo test` also builds it sandboxed, and builds the derivations of
@@ -306,14 +307,14 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
   fixed-output derivation can, that `__noChroot` needs relaxed mode, and
   that `timeout` and `max-silent-time` kill a build with its background
   processes. On Linux these need unprivileged user namespaces.
-* `tests/sandbox-linux.sh [SYSTEM...]` builds oxnix with nixpkgs and runs
+* `tests/sandbox-linux.sh [SYSTEM...]` builds cranix with nixpkgs and runs
   those checks inside a Nix build, as the unprivileged build user, for
   `aarch64-linux` and `x86_64-linux` on this machine or its remote builders.
   Systems without a builder are skipped.
 
 ## Profiling
 
-The `oxnix` binary uses mimalloc. On macOS its C sources are compiled and
+The `cranix` binary uses mimalloc. On macOS its C sources are compiled and
 linked with clang (`.cargo/config.toml`), since GCC there emulates
 thread-local storage. A heap-profiling build swaps in dhat:
 

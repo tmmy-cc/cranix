@@ -1,4 +1,4 @@
-# oxnix, Nix, Lix and Snix
+# cranix, Nix, Lix and Snix
 
 Four implementations of the same model: a lazy, pure language that produces
 store derivations, and a content-addressed store that realises them. They
@@ -14,7 +14,7 @@ agree on the externally visible formats (store path fingerprints, ATerm
 * **Snix**: a 2025 fork of TVL's Tvix, a from-scratch Rust reimplementation
   split into independent services (evaluator, content-addressed store,
   builder) that talk over gRPC.
-* **oxnix**: this repository. A from-scratch Rust implementation of the
+* **cranix**: this repository. A from-scratch Rust implementation of the
   evaluator, derivations and a local store with a builder, packaged as one
   CLI over four library crates.
 
@@ -24,7 +24,7 @@ benchmark section says otherwise.
 
 ## At a glance
 
-|                        | Nix 2.24                    | Lix                          | Snix                                   | oxnix                                   |
+|                        | Nix 2.24                    | Lix                          | Snix                                   | cranix                                   |
 |------------------------|-----------------------------|------------------------------|----------------------------------------|-----------------------------------------|
 | Language               | C++                         | C++, gradual Rust            | Rust                                   | Rust                                    |
 | Lineage                | original                    | fork of CppNix 2.18          | fork of Tvix (clean-room)              | clean-room                              |
@@ -87,13 +87,13 @@ cost is that Snix is a toolkit rather than a replacement for the `nix`
 command, and the service boundaries add machinery that a single-machine user
 does not need.
 
-## oxnix
+## cranix
 
-oxnix takes Snix's starting point (a Rust implementation written against
+cranix takes Snix's starting point (a Rust implementation written against
 Nix's observable behaviour, with the formats in a reusable crate) but keeps
 Nix's single-process, single-machine shape:
 
-* `oxnix-core` plays the role of `nix-compat`: hashes, nix-base32, store
+* `cranix-core` plays the role of `nix-compat`: hashes, nix-base32, store
   path fingerprints, NAR streaming, ATerm and `hashDerivationModulo`, with no
   file system or evaluator dependencies.
 * The evaluator compiles the syntax tree to an IR with resolved slots and
@@ -121,7 +121,7 @@ Nix's single-process, single-machine shape:
   (`passAsFile`, structured attributes as JSON, `impureEnvVars`),
   reference scanning, content-addressed and impure derivations, the build
   sandbox and remote builders. A daemon speaks Nix's worker protocol, so
-  Nix clients can use an oxnix store and oxnix can use a Nix daemon.
+  Nix clients can use an cranix store and cranix can use a Nix daemon.
 * Substitution fetches whole closures from `file://` and `https://` binary
   caches before building, checking signatures and streaming hashes, and
   remembers lookups on disk with Nix's TTLs (one file per path, where Nix
@@ -134,13 +134,13 @@ Evaluation of `(import <nixpkgs> {}).<attr>.drvPath` on an Apple M-series
 machine (aarch64-darwin), nixpkgs 24.11pre, best of three runs, `.drv` files
 already present in both stores. Both tools print the same path.
 
-| Attribute | Nix 2.24 time | oxnix time | Nix peak RSS | oxnix peak RSS |
+| Attribute | Nix 2.24 time | cranix time | Nix peak RSS | cranix peak RSS |
 |-----------|--------------:|-----------:|-------------:|---------------:|
 | `hello`   | 0.29 s        | 0.25 s     | 205 MiB      | 157 MiB        |
 | `python3` | 0.29 s        | 0.26 s     | 206 MiB      | 160 MiB        |
 | `git`     | 0.36 s        | 0.35 s     | 265 MiB      | 225 MiB        |
 
-oxnix (with mimalloc) is on par with or slightly faster than Nix on these
+cranix (with mimalloc) is on par with or slightly faster than Nix on these
 workloads and uses 15–25% less memory. A heap profile of `hello` peaks at
 about 140 MB; the largest remaining items are merges of mid-sized sets by
 `//` (30%), thunks including `mapAttrs` results (26%), and the compiled
@@ -161,6 +161,6 @@ benchmark machine and are not part of this table.
   store backends, a deduplicating content-addressed store, serving caches):
   Snix.
 * Embedding Nix evaluation or derivation handling in a Rust program, or
-  studying how Nix works in a small code base: oxnix. Its crates are small
+  studying how Nix works in a small code base: cranix. Its crates are small
   enough to read in an afternoon, and its differential test suite pins its
   behaviour to Nix's output.
