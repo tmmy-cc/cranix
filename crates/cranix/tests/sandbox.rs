@@ -257,3 +257,88 @@ fn builds_get_nix_personality() {
         }
     }
 }
+
+/// A `cranix daemon` serving `store` with `settings`, stopped on drop.
+struct DaemonProcess {
+    child: std::process::Child,
+    socket: PathBuf,
+}
+
+impl DaemonProcess {
+    fn start(store: &TempStore, settings: &[&str]) -> DaemonProcess {
+        let socket = store.0.join("daemon.sock");
+        let child = Command::new(CRANIX)
+            .arg("--store")
+            .arg(&store.0)
+            .args(settings)
+            .args(["daemon", "--socket"])
+            .arg(&socket)
+            .env_remove("NIX_CONFIG")
+            .env_remove("CRANIX_CONFIG")
+            .env("NIX_CONF_DIR", store.0.join("no-conf"))
+            .env("NIX_USER_CONF_FILES", "")
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        for _ in 0..500 {
+            if socket.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        DaemonProcess { child, socket }
+    }
+
+    /// Builds through the daemon, with a client of its own configuration.
+    fn build(&self, store: &TempStore, args: &[&str]) -> Output {
+        let uri = format!("unix://{}?store={}", self.socket.display(), store.0.join("store").display());
+        Command::new(CRANIX)
+            .args(["--store", &uri, "build", "--no-link"])
+            .args(args)
+            .current_dir(repo())
+            .env_remove("NIX_CONFIG")
+            .env_remove("CRANIX_CONFIG")
+            .env("NIX_CONF_DIR", store.0.join("no-conf"))
+            .env("NIX_USER_CONF_FILES", "")
+            .env("XDG_DATA_HOME", store.0.join("client"))
+            .output()
+            .unwrap()
+    }
+}
+
+impl Drop for DaemonProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn daemon_builds_use_its_sandbox_setting() {
+    let store = TempStore::new("daemon");
+    let port = serve().to_string();
+    let secret = repo().join("Cargo.toml").to_string_lossy().into_owned();
+    let paths = ["--option", "sandbox-paths", sandbox_paths()];
+
+    let mut settings = SANDBOX.to_vec();
+    settings.extend(paths);
+    let daemon = DaemonProcess::start(&store, &settings);
+    // The client asks for no sandbox; the daemon's setting decides.
+    let mut args = probe_args(&secret, &port, "-daemon", "probe");
+    args.extend(["--option", "sandbox", "false"]);
+    let o = daemon.build(&store, &args);
+    if !sandbox_works(&o) {
+        return;
+    }
+    let report = std::fs::read_to_string(&outputs(&o)[0]).unwrap();
+    assert!(report.contains("read: denied\n"), "{report}");
+    assert!(report.contains("network: denied\n"), "{report}");
+    drop(daemon);
+
+    let mut settings = vec!["--no-sandbox"];
+    settings.extend(paths);
+    let daemon = DaemonProcess::start(&store, &settings);
+    let o = daemon.build(&store, &probe_args(&secret, &port, "-daemon-unsandboxed", "probe"));
+    let report = std::fs::read_to_string(&outputs(&o)[0]).unwrap();
+    assert!(report.contains("read: allowed\n"), "{report}");
+}
