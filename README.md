@@ -73,6 +73,25 @@ scanned for references against the input closure with a windowed scanner,
 fixed-output hashes are verified, logs are kept per derivation and the tail
 is shown on failure. `builtin:fetchurl` is implemented with `curl`.
 
+**Substitution.** Before building, `realise` asks the configured binary
+caches (default `https://cache.nixos.org`) for the missing outputs of each
+derivation; derivations whose outputs are all available are fetched with
+their closures instead of built, and their inputs are skipped. Lookups and
+downloads run in parallel (`max-substitution-jobs`). NARs are streamed from
+`curl` through the decompressor (xz, zstd, bzip2 or none) into the store
+while the file and NAR hashes are checked, and paths are registered in
+dependency order once their references are valid. With `require-sigs`, a
+narinfo must carry an ed25519 signature by one of `trusted-public-keys` over
+Nix's fingerprint, or be content-addressed. `builtins.storePath` substitutes
+missing paths the same way. Caches hold `/nix/store` paths, so substitution
+applies to the default chroot store.
+
+Settings use `nix.conf` syntax and are read from
+`~/.config/oxnix/oxnix.conf`, then `$OXNIX_CONFIG`, then `--option NAME
+VALUE` (or `--NAME VALUE`, `--[no-]NAME`): `substituters`,
+`trusted-public-keys`, `require-sigs`, `substitute`, `secret-key-files`,
+`max-substitution-jobs`, each list also as `extra-NAME`.
+
 ## Usage
 
 ```bash
@@ -87,12 +106,23 @@ target/release/oxnix eval --expr '(import <nixpkgs> {}).hello.drvPath' -I nixpkg
 target/release/oxnix --store ~/oxstore build tests/build.nix -j 8 -L
 ```
 
+```bash
+target/release/oxnix build --expr '(import <nixpkgs> {}).hello' -I nixpkgs=/path/to/nixpkgs
+```
+
+```bash
+target/release/oxnix copy --to 'file:///tmp/cache?compression=zstd&secret-key=/path/to/key' ./result
+```
+
 Commands: `eval` (`--json`, `--raw`, `--lazy`), `instantiate`, `build`
 (`-o`, `--no-link`, `-j`, `-L`, `--keep-failed`), `show-derivation`,
 `hash path|file|convert`, `nar dump|restore`, and
-`store add|path-info|closure|ls|verify|gc`. Global options: `--store`, `-I`,
-`--arg`, `--argstr`, `--system`, `--pure`. `NIX_PATH` entries that are
-absolute paths are honoured.
+`store add|path-info|sign|closure|ls|verify|gc` (`path-info --json -r
+--closure-size`, also against a cache with `--store URL`), `copy --to URL` and
+`copy --from URL` for `file://` and `https://` caches, and
+`key generate-secret|convert-secret-to-public`. Global options: `--store`,
+`-I`, `--arg`, `--argstr`, `--system`, `--pure`, `--option`. `NIX_PATH`
+entries that are absolute paths are honoured.
 
 ## Scope
 
@@ -101,11 +131,12 @@ defaults and `@` patterns, dynamic attributes, `__functor`, `__toString`,
 indented strings, path interpolation, search paths, `<nix/fetchurl.nix>`),
 string contexts, `derivation`/`derivationStrict` with structured attributes,
 `__ignoreNulls`, multiple outputs and fixed-output derivations,
-`builtins.path`/`filterSource`, import from derivation, and the local store
-operations listed above.
+`builtins.path`/`filterSource`, import from derivation, the local store
+operations listed above, and binary caches: narinfo reading and writing,
+signatures, substitution and `copy`.
 
-Not implemented: the daemon and its wire protocol, substituters and binary
-caches (`.narinfo`, signatures, `copy`), sandboxing, remote builders,
+Not implemented: the daemon and its wire protocol, S3 and SSH stores,
+narinfo disk caching, sandboxing, remote builders,
 flakes, `fetchGit`/`fetchTarball`/`fetchTree`, content-addressed
 (floating) and impure derivations, `fromTOML`, `toXML`, `unsafeGetAttrPos`
 (returns `null`), and profiles/`nix-env`.

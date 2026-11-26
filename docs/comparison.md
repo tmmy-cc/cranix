@@ -33,10 +33,10 @@ benchmark section says otherwise.
 | Memory management      | Boehm GC                    | Boehm GC                     | reference counting                     | reference counting, cycles live until exit |
 | I/O during evaluation  | synchronous                 | synchronous                  | VM suspends into async I/O             | synchronous                             |
 | Store model            | `/nix/store` + SQLite DB    | same as Nix                  | BLAKE3 Merkle DAG (castore) + PathInfo service; NARs computed on demand | `/nix/store` layout + one metadata file per path |
-| Store backends         | local, daemon, binary caches, SSH, S3 | same as Nix          | pluggable (memory, files, object storage, gRPC) | local only                        |
+| Store backends         | local, daemon, binary caches, SSH, S3 | same as Nix          | pluggable (memory, files, object storage, gRPC) | local; binary caches (file, HTTP)  |
 | Daemon protocol        | yes                         | yes, compatible              | partial (via `nix-compat`)             | no                                      |
 | Builder                | goal/worker state machine, sandbox | same, sandbox             | separate build service (OCI / bubblewrap) | thread-pool scheduler, no sandbox    |
-| Substituters / caches  | yes, signed                 | yes                          | yes (serves and consumes NAR/narinfo)  | no                                      |
+| Substituters / caches  | yes, signed                 | yes                          | yes (serves and consumes NAR/narinfo)  | yes, signed; `copy` writes caches       |
 | Flakes                 | experimental                | experimental                 | no                                     | no                                      |
 | Drop-in for `nix`      | —                           | yes                          | no (toolkit)                           | no (subset CLI)                         |
 | nixpkgs `drvPath` parity | reference                 | yes                          | yes for large parts of nixpkgs         | yes for tested attributes (`hello`, `python3`, `git`) |
@@ -119,8 +119,11 @@ Nix's single-process, single-machine shape:
 * The builder is a ready-queue scheduler over a scoped thread pool; it
   implements the parts of the builder environment that nixpkgs relies on
   (`passAsFile`, structured attributes as JSON, `impureEnvVars`) and
-  reference scanning, and leaves out sandboxing, remote builders and
-  substitution.
+  reference scanning, and leaves out sandboxing and remote builders.
+* Substitution fetches whole closures from `file://` and `https://` binary
+  caches before building, checking signatures and streaming hashes; `copy
+  --to` writes caches that Nix reads, with NARs compressed like
+  cache.nixos.org's.
 
 ### Measured against Nix 2.24
 
