@@ -280,6 +280,16 @@ fn set_list(list: &mut Vec<String>, extra: bool, value: &str) {
     list.extend(words(value));
 }
 
+/// Keeps the first of URLs that differ only in a trailing slash.
+fn dedup_urls(urls: &mut Vec<String>) {
+    let key = |u: &str| {
+        let (base, query) = u.split_once('?').map_or((u, None), |(b, q)| (b, Some(q)));
+        (base.trim_end_matches('/').to_string(), query.map(str::to_string))
+    };
+    let mut seen = BTreeSet::new();
+    urls.retain(|u| seen.insert(key(u)));
+}
+
 /// Prints `warning: unknown setting 'NAME'` once per name and process.
 fn warn_unknown(name: &str) {
     static WARNED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
@@ -318,7 +328,10 @@ impl Settings {
             None => (name, false),
         };
         match base {
-            "substituters" | "binary-caches" => set_list(&mut self.substituters, extra, value),
+            "substituters" | "binary-caches" => {
+                set_list(&mut self.substituters, extra, value);
+                dedup_urls(&mut self.substituters);
+            }
             "trusted-public-keys" | "binary-cache-public-keys" => set_list(&mut self.trusted_public_keys, extra, value),
             "secret-key-files" => set_list(&mut self.secret_key_files, extra, value),
             "trusted-users" => set_list(&mut self.trusted_users, extra, value),
@@ -583,6 +596,19 @@ mod tests {
         assert_eq!(Settings::kind("sandbox"), Some(Kind::Bool));
         assert_eq!(Settings::kind("substituters"), Some(Kind::List));
         assert_eq!(Settings::kind("no-such-setting"), None);
+    }
+
+    #[test]
+    fn substituters_are_listed_once() {
+        let mut s = Settings::default();
+        s.apply_text(
+            "substituters = https://a.example/?priority=10 https://cache.nixos.org/ https://cache.nixos.org/
+             extra-substituters = https://cache.nixos.org https://b.example https://b.example/
+",
+            Path::new("/"),
+        )
+        .unwrap();
+        assert_eq!(s.substituters, ["https://a.example/?priority=10", "https://cache.nixos.org/", "https://b.example"]);
     }
 
     #[test]
