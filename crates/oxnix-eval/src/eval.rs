@@ -322,15 +322,18 @@ impl Eval {
                 Ok(v)
             }
             Expr::HasAttr { e, path } => {
+                // Each path element is forced only when the next one is
+                // looked up in it, so the value at the end of the path
+                // stays lazy.
                 let mut v = self.eval(e, env)?;
-                for k in path.iter() {
+                for (i, k) in path.iter().enumerate() {
+                    if i > 0 {
+                        v = self.force(&v)?;
+                    }
                     let k = self.key(k, env)?;
                     match &v {
                         Value::Attrs(a) => match a.get(&k) {
-                            Some(x) => {
-                                let x = x.clone();
-                                v = self.force(&x)?;
-                            }
+                            Some(x) => v = x.clone(),
                             None => return Ok(Value::Bool(false)),
                         },
                         _ => return Ok(Value::Bool(false)),
