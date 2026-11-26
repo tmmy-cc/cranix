@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use oxnix_core::hash::{Hash, HashAlgo, HashSink};
 use oxnix_core::{nar, Derivation, FileIngestion, StorePath};
 
+use crate::sandbox::{self, Sandbox, SandboxMode};
 use crate::{canonicalise, fsutil, refs, PathInfo, Result, Store};
 
 #[derive(Clone, Debug)]
@@ -26,6 +27,19 @@ pub struct BuildOptions {
     pub print_logs: bool,
     pub keep_failed: bool,
     pub system: String,
+    pub system_features: Vec<String>,
+    pub sandbox: SandboxMode,
+    /// `sandbox-paths` entries: `PATH`, `TARGET=SOURCE`, optionally with a
+    /// trailing `?`.
+    pub sandbox_paths: Vec<String>,
+    /// Build unsandboxed when the platform cannot sandbox.
+    pub sandbox_fallback: bool,
+    /// Where the build directory appears inside the Linux sandbox.
+    pub sandbox_build_dir: String,
+    pub sandbox_dev_shm_size: String,
+    /// Prefixes a derivation's `__impureHostDeps` must lie under.
+    pub allowed_impure_host_deps: Vec<String>,
+    pub darwin_log_sandbox_violations: bool,
     /// Seconds a build may run; 0 for no limit.
     pub timeout: u64,
     /// Seconds a build may go without output; 0 for no limit.
@@ -41,6 +55,18 @@ impl Default for BuildOptions {
             print_logs: false,
             keep_failed: false,
             system: host_system(),
+            system_features: Vec::new(),
+            sandbox: SandboxMode::host_default(),
+            sandbox_paths: option_env!("OXNIX_SANDBOX_SHELL").map(|sh| vec![format!("/bin/sh={sh}")]).unwrap_or_default(),
+            sandbox_fallback: true,
+            sandbox_build_dir: "/build".into(),
+            sandbox_dev_shm_size: "50%".into(),
+            allowed_impure_host_deps: if cfg!(target_os = "macos") {
+                ["/System/Library", "/usr/lib", "/dev", "/bin/sh"].map(String::from).to_vec()
+            } else {
+                Vec::new()
+            },
+            darwin_log_sandbox_violations: false,
             timeout: 0,
             max_silent_time: 0,
         }
@@ -61,9 +87,35 @@ fn parse_num<T: std::str::FromStr>(name: &str, v: &str) -> Result<T> {
 
 impl BuildOptions {
     /// Applies the Nix setting `name` (`--option NAME VALUE`, `NIX_CONFIG`).
-    /// Returns `Ok(false)` for settings the builder does not use.
+    /// List settings also accept an `extra-` prefix, which appends. Returns
+    /// `Ok(false)` for settings the builder does not use.
     pub fn set(&mut self, name: &str, value: &str) -> Result<bool> {
-        match name {
+        let (base, append) = match name.strip_prefix("extra-") {
+            Some(n) => (n, true),
+            None => (name, false),
+        };
+        let words = || value.split_whitespace().map(String::from);
+        let set_list = |l: &mut Vec<String>| {
+            if !append {
+                l.clear();
+            }
+            l.extend(words());
+        };
+        match base {
+            "sandbox-paths" | "build-chroot-dirs" | "build-sandbox-paths" => set_list(&mut self.sandbox_paths),
+            "allowed-impure-host-deps" => set_list(&mut self.allowed_impure_host_deps),
+            "system-features" => set_list(&mut self.system_features),
+            _ if append => return Ok(false),
+            "sandbox" | "build-use-sandbox" | "build-use-chroot" => self.sandbox = SandboxMode::parse(value)?,
+            "sandbox-fallback" => self.sandbox_fallback = parse_bool(name, value)?,
+            "sandbox-build-dir" => {
+                if !value.starts_with('/') || value == "/" {
+                    return Err(format!("option 'sandbox-build-dir' must be an absolute path below '/', not '{value}'"));
+                }
+                self.sandbox_build_dir = value.trim_end_matches('/').to_string();
+            }
+            "sandbox-dev-shm-size" => self.sandbox_dev_shm_size = value.to_string(),
+            "darwin-log-sandbox-violations" => self.darwin_log_sandbox_violations = parse_bool(name, value)?,
             "timeout" | "build-timeout" => self.timeout = parse_num(name, value)?,
             "max-silent-time" | "build-max-silent-time" => self.max_silent_time = parse_num(name, value)?,
             "keep-failed" => self.keep_failed = parse_bool(name, value)?,
@@ -321,6 +373,22 @@ impl Store {
             fsutil::remove_all(&self.real_path(p))?;
         }
 
+        // The inputs' closure: what a sandboxed builder can see, and what
+        // outputs may refer to besides each other.
+        let mut inputs: BTreeSet<StorePath> = drv.input_srcs.clone();
+        for (d, outs) in &drv.input_drvs {
+            let dd = match all.get(d) {
+                Some(dd) => dd.clone(),
+                None => self.read_derivation(d)?,
+            };
+            for o in outs {
+                if let Some(p) = dd.outputs.get(o).and_then(|x| x.path.clone()) {
+                    inputs.insert(p);
+                }
+            }
+        }
+        let inputs = self.closure(inputs)?;
+
         if let Some(b) = drv.builder.strip_prefix("builtin:") {
             match b {
                 "fetchurl" => self.builtin_fetchurl(drv, outputs[0].1)?,
@@ -335,24 +403,11 @@ impl Store {
                     opts.system
                 ));
             }
-            self.run_builder(drv_path, drv, opts)?;
+            let outs: Vec<&StorePath> = outputs.iter().map(|(_, p)| *p).collect();
+            self.run_builder(drv_path, drv, &inputs, &outs, opts)?;
         }
 
-        // References may only point into the inputs' closure or at outputs
-        // of this derivation.
-        let mut inputs: BTreeSet<StorePath> = drv.input_srcs.clone();
-        for (d, outs) in &drv.input_drvs {
-            let dd = match all.get(d) {
-                Some(dd) => dd.clone(),
-                None => self.read_derivation(d)?,
-            };
-            for o in outs {
-                if let Some(p) = dd.outputs.get(o).and_then(|x| x.path.clone()) {
-                    inputs.insert(p);
-                }
-            }
-        }
-        let mut candidates = self.closure(inputs)?;
+        let mut candidates = inputs;
         candidates.extend(outputs.iter().map(|(_, p)| (*p).clone()));
 
         for (name, p) in &outputs {
@@ -397,7 +452,16 @@ impl Store {
         Ok(())
     }
 
-    fn run_builder(&self, drv_path: &StorePath, drv: &Derivation, opts: &BuildOptions) -> Result<()> {
+    fn run_builder(
+        &self,
+        drv_path: &StorePath,
+        drv: &Derivation,
+        inputs: &BTreeSet<StorePath>,
+        outputs: &[&StorePath],
+        opts: &BuildOptions,
+    ) -> Result<()> {
+        let spec = sandbox::plan(self, drv_path, drv, inputs, opts)?;
+
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let top = std::env::temp_dir().join(format!(
             "oxnix-build-{}-{}-{}",
@@ -407,17 +471,39 @@ impl Store {
         ));
         fsutil::remove_all(&top)?;
         fs::create_dir_all(&top).map_err(|e| format!("creating build directory: {e}"))?;
+        // The macOS sandbox matches paths after resolving symlinks.
+        let top = top.canonicalize().map_err(|e| format!("resolving build directory: {e}"))?;
         let top_s = top.to_string_lossy().into_owned();
 
-        let r = self.run_in(drv_path, drv, &top, &top_s, opts);
-        if r.is_ok() || !opts.keep_failed {
+        let sb = match Sandbox::prepare(self, drv_path, spec, outputs, &top, opts) {
+            Ok(sb) => sb,
+            Err(e) => {
+                let _ = fsutil::remove_all(&top);
+                return Err(e);
+            }
+        };
+        let r = self.run_in(drv_path, drv, &sb, &top, &top_s, outputs, opts);
+        let failed = r.is_err();
+        let cleaned = sb.cleanup();
+        if !failed || !opts.keep_failed {
             fsutil::remove_all(&top)?;
         }
-        r
+        r.and(cleaned)
     }
 
-    fn run_in(&self, drv_path: &StorePath, drv: &Derivation, top: &Path, top_s: &str, opts: &BuildOptions) -> Result<()> {
-        let tmp = top_s.to_string();
+    #[allow(clippy::too_many_arguments)]
+    fn run_in(
+        &self,
+        drv_path: &StorePath,
+        drv: &Derivation,
+        sb: &Sandbox,
+        top: &Path,
+        top_s: &str,
+        outputs: &[&StorePath],
+        opts: &BuildOptions,
+    ) -> Result<()> {
+        // The build directory as the builder sees it.
+        let tmp = sb.build_dir(top_s);
 
         let mut env: BTreeMap<String, String> = BTreeMap::new();
         env.insert("PATH".into(), "/path-not-set".into());
@@ -462,12 +548,12 @@ impl Store {
             format!("{what}; last log lines:\n{tail}{kept}")
         };
         // One pipe carries stdout and stderr, so their lines interleave in
-        // order.
+        // order, and messages from setting up the sandbox reach the log
+        // even when the builder never starts.
         let (out_r, out_w) = log_pipe().map_err(|e| format!("creating log pipe: {e}"))?;
         let out_w2 = out_w.try_clone().map_err(|e| format!("creating log pipe: {e}"))?;
-        let spawned = Command::new(&drv.builder)
-            .args(&drv.args)
-            .current_dir(top)
+        let spawned = sb
+            .command(&drv.builder, &drv.args, top)
             .env_clear()
             .envs(&env)
             .stdin(Stdio::null())
@@ -568,7 +654,7 @@ impl Store {
         if !status.success() {
             return Err(failure(format!("builder for '{}' failed with {status}", self.dir.print(drv_path))));
         }
-        Ok(())
+        sb.collect_outputs(self, outputs)
     }
 
     fn builtin_fetchurl(&self, drv: &Derivation, out: &StorePath) -> Result<()> {

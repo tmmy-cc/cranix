@@ -396,6 +396,7 @@ dependencies = [
  "libc",
  "lzma-sys",
  "oxnix-core",
+ "serde_json",
  "xz2",
  "zstd",
 ]

@@ -14,6 +14,7 @@ pub mod http;
 pub mod narinfo_cache;
 pub mod refs;
 pub mod substitute;
+pub mod sandbox;
 
 use std::collections::BTreeSet;
 use std::fs;

@@ -54,8 +54,9 @@ global options:
                     substitute, secret-key-files, max-substitution-jobs
                     (and extra-*), read from ~/.config/oxnix/oxnix.conf and $OXNIX_CONFIG
   --store URL       for 'store path-info', read a binary cache (file:// or https://)
-  --timeout N, --max-silent-time N
-                    shorthands for the corresponding build settings
+  --sandbox, --no-sandbox, --timeout N, --max-silent-time N
+                    shorthands for the build settings sandbox (true|false|relaxed),
+                    timeout and max-silent-time; sandbox-paths via --option
 ";
 
 struct Cli {
@@ -136,6 +137,8 @@ fn parse_cli() -> Result<Cli, String> {
                     cli.options.push((n, v));
                 }
             }
+            "--sandbox" => cli.options.push(("sandbox".into(), "true".into())),
+            "--no-sandbox" => cli.options.push(("sandbox".into(), "false".into())),
             f if f.strip_prefix("--").is_some_and(|n| Settings::is_known(n) && !Settings::is_bool(n)) => {
                 let v = val(f)?;
                 cli.settings.set(&f[2..], &v)?;

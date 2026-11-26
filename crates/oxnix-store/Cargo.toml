@@ -13,3 +13,4 @@ xz2 = "0.1"
 bzip2 = { version = "0.4", features = ["static"] }
 # Builds the bundled liblzma so the binary does not depend on a system one.
 lzma-sys = { version = "0.1", features = ["static"] }
+serde_json.workspace = true
