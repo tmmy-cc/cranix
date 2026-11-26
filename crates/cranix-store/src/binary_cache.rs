@@ -325,6 +325,12 @@ impl BinaryCache {
         redact_url(&self.url)
     }
 
+    /// The `trusted` parameter: paths and realisations from this cache are
+    /// used even without a signature by one of `trusted-public-keys`.
+    pub fn is_trusted(&self) -> bool {
+        self.param("trusted") == Some("true")
+    }
+
     pub fn param(&self, name: &str) -> Option<&str> {
         self.params.get(name).map(String::as_str)
     }

@@ -174,7 +174,7 @@ impl Store {
                 Ok(Some(ni)) if ni.path != *p => {
                     eprintln!("warning: substituter '{}' returned the narinfo of '{}' for '{p}'", c.shown(), ni.path)
                 }
-                Ok(Some(ni)) if self.subst.require_sigs && !ni.is_trusted(&self.dir, &self.subst.keys) => eprintln!(
+                Ok(Some(ni)) if self.subst.require_sigs && !c.is_trusted() && !ni.is_trusted(&self.dir, &self.subst.keys) => eprintln!(
                     "warning: ignoring substitute for '{}' from '{}', as it's not signed by any of the keys in 'trusted-public-keys'",
                     self.dir.print(p),
                     c.shown()
@@ -267,7 +267,7 @@ impl Store {
                 let c = &self.subst.caches[i];
                 match c.query_realisation(&id) {
                     Ok(Some(r)) if r.id != id => log_message(logger, &format!("warning: substituter '{}' returned realisation '{}' for '{id}'", c.shown(), r.id)),
-                    Ok(Some(r)) if self.subst.require_sigs && !r.is_signed_by(&self.subst.keys) => log_message(
+                    Ok(Some(r)) if self.subst.require_sigs && !c.is_trusted() && !r.is_signed_by(&self.subst.keys) => log_message(
                         logger,
                         &format!("warning: ignoring realisation '{id}' from '{}', as it's not signed by any of the keys in 'trusted-public-keys'", c.shown()),
                     ),
@@ -495,6 +495,34 @@ mod tests {
         assert!(dst.verify(&b).unwrap());
         assert_eq!(dst.query_sigs(&b).unwrap().len(), 1);
         assert_eq!(fs::read(dst.real_path(&a)).unwrap(), b"leaf");
+        fsutil::remove_all(&root).unwrap();
+    }
+
+    #[test]
+    fn trusted_caches_need_no_signatures() {
+        let root = std::env::temp_dir().join(format!("cranix-subst-trusted-{}", std::process::id()));
+        let _ = fsutil::remove_all(&root);
+        let src = Store::open_chroot(&root.join("src")).unwrap();
+        let a = src.add_text("a", b"unsigned", &BTreeSet::new()).unwrap();
+        let cache_url = format!("file://{}/cache", root.display());
+        let cache = BinaryCache::open(&cache_url).unwrap();
+        cache.init_for_writing(&src.dir).unwrap();
+        // Unsigned, and without a content address to vouch for it.
+        let info = PathInfo { ca: None, ..src.query_info(&a).unwrap().unwrap() };
+        cache.add_path(&src.dir, &src.real_path(&a), &info, &[], &[]).unwrap();
+
+        for (param, ok) in [("", false), ("?trusted=false", false), ("?trusted=true", true)] {
+            let dir = root.join(format!("dst{}", param.len()));
+            let mut dst = Store::open_chroot(&dir).unwrap();
+            let mut settings = Settings::default();
+            settings.set("substituters", &format!("{cache_url}{param}")).unwrap();
+            settings.set("trusted-public-keys", "").unwrap();
+            settings.set("require-sigs", "true").unwrap();
+            dst.set_substituters(Substituters::from_settings(&settings).unwrap());
+            let failed = dst.substitute_paths(std::slice::from_ref(&a)).unwrap();
+            assert_eq!(failed.is_empty(), ok, "{param}");
+            assert_eq!(dst.is_valid(&a), ok, "{param}");
+        }
         fsutil::remove_all(&root).unwrap();
     }
 }

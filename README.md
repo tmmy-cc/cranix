@@ -120,7 +120,10 @@ downloads run in parallel (`max-substitution-jobs`). NARs are streamed from
 while the file and NAR hashes are checked, and paths are registered in
 dependency order once their references are valid. With `require-sigs`, a
 narinfo must carry an ed25519 signature by one of `trusted-public-keys` over
-Nix's fingerprint, or be content-addressed. `builtins.storePath` substitutes
+Nix's fingerprint, or be content-addressed, or come from a cache whose URL
+has the parameter `trusted=true`. Cache URLs take Nix's parameters
+`priority`, `trusted`, `compression` and `secret-key`
+(`https://host/cache?priority=10&trusted=true`). `builtins.storePath` substitutes
 missing paths the same way. Caches hold `/nix/store` paths, so substitution
 applies to the default chroot store. HTTP requests are retried on
 connection errors, 408, 429 and 5xx (`download-attempts`), and take

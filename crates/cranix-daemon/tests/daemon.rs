@@ -385,6 +385,14 @@ fn daemon_substitutes_signed_paths() {
     assert_eq!(std::fs::read_to_string(daemon.store.real_path(&out)).unwrap(), "cached\n");
     assert_eq!(daemon.store.query_sigs(&out).unwrap().len(), 1);
 
+    // A cache marked `trusted=true` needs no signature by a trusted key.
+    let trusting = substituting_store(&root.join("trusting"), &sd, &format!("{}?trusted=true", server.url), &key);
+    let trusting = Arc::new(Daemon::new(trusting, DaemonConfig::default()));
+    let mut t = connect(&trusting, true);
+    t.set_options(&Default::default()).unwrap();
+    t.ensure_path(&foreign).unwrap();
+    assert!(trusting.store.is_valid(&foreign));
+
     // Clients that turn substitution off get nothing from the caches.
     let mut c = connect(&daemon, true);
     c.set_options(&ClientOptions { use_substitutes: false, ..Default::default() }).unwrap();
