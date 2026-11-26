@@ -37,6 +37,18 @@ let
     echo header > $dev/h
   '' { outputs = [ "out" "dev" ]; };
 
+  # Text-hashed like `builtins.toFile`, with a reference to `a`.
+  text = ca "text" "echo ${a} > $out" { outputHashMode = "text"; };
+
+  textFixed = derivation {
+    name = "text-fixed";
+    inherit system;
+    builder = "/bin/sh";
+    args = [ "-c" "printf hello > $out" ];
+    outputHashMode = "text";
+    outputHash = "sha256-LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=";
+  };
+
   i = derivation {
     name = "i";
     inherit system;
@@ -45,4 +57,4 @@ let
     __impure = true;
   };
 in
-{ inherit a b c multi i; }
+{ inherit a b c multi text textFixed i; }

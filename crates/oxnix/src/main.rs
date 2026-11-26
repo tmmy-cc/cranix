@@ -610,12 +610,9 @@ fn cmd_show_derivation(cli: &Cli, args: &[String]) -> Result<(), String> {
             if kind == OutputKind::Fixed {
                 fields.push(format!("\"hash\":\"{}\"", o.hash));
             }
-            if !o.hash_algo.is_empty() {
-                let (m, a) = match o.hash_algo.strip_prefix("r:") {
-                    Some(a) => ("nar", a),
-                    None => ("flat", o.hash_algo.as_str()),
-                };
-                fields.push(format!("\"hashAlgo\":\"{a}\""));
+            if let Some((method, algo)) = o.method_algo() {
+                let m = method.name();
+                fields.push(format!("\"hashAlgo\":\"{algo}\""));
                 if kind == OutputKind::Impure {
                     fields.push("\"impure\":true".into());
                 }

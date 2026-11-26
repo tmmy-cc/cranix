@@ -611,7 +611,7 @@ impl Store {
             let (nar_hash, nar_size) = Store::nar_hash(&real)?;
             let mut ca = None;
             if let Some((method, want)) = drv.outputs[*name].fixed() {
-                let got = match method {
+                let got = match method.ingestion() {
                     FileIngestion::Flat => {
                         Hash::digest(want.algo, &fs::read(&real).map_err(|e| format!("reading output: {e}"))?)
                     }
@@ -631,8 +631,7 @@ impl Store {
                         got.to_sri()
                     ));
                 }
-                let r = if method == FileIngestion::Recursive { "r:" } else { "" };
-                ca = Some(format!("fixed:{r}{}:{}", want.algo, want.to_nix32()));
+                ca = Some(method.content_address(&want));
             }
             let references = if ca.is_some() {
                 BTreeSet::new()

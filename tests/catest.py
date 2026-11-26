@@ -20,7 +20,7 @@ import tempfile
 
 here = os.path.dirname(os.path.abspath(__file__))
 oxnix = os.environ.get("OXNIX", os.path.join(here, "..", "target", "debug", "oxnix"))
-features = "ca-derivations impure-derivations nix-command"
+features = "ca-derivations dynamic-derivations impure-derivations nix-command"
 system = {"arm64": "aarch64", "x86_64": "x86_64"}.get(platform.machine(), platform.machine()) + (
     "-darwin" if sys.platform == "darwin" else "-linux"
 )
@@ -65,7 +65,7 @@ def main():
     ox = [oxnix, "--extra-experimental-features", features]
     log = os.path.join(tmp, "b-builds")
     args = ["--argstr", "system", system, "--argstr", "log", log]
-    attrs = ["a", "b", "c", "multi", "i"]
+    attrs = ["a", "b", "c", "multi", "text", "textFixed", "i"]
     try:
         # Evaluation: Nix writes into a chroot store with /nix/store paths.
         chroot = os.path.join(tmp, "chroot")
@@ -84,11 +84,11 @@ def main():
         # Building: both stores live at the same location, one after the other.
         store = os.path.join(tmp, "s")
         nix_store = f"local?store={store}/store&state={store}/nix-var&log={store}/nix-log"
-        built = ["c", "b", "multi.out", "multi.dev"]
+        built = ["c", "b", "multi.out", "multi.dev", "text", "textFixed"]
         nix_build = ["nix", "build", "--no-link", "--print-out-paths", "--substituters", "", "--store", nix_store, "-f", os.path.join(here, "ca.nix")] + args
         want_paths = run(nix_build + built, nix_env).split("\n")
         info = ["realisation", "info", "--json"]
-        want_real = json.loads(run(["nix"] + info + ["--store", nix_store, "-f", os.path.join(here, "ca.nix")] + args + ["b", "c"], nix_env))
+        want_real = json.loads(run(["nix"] + info + ["--store", nix_store, "-f", os.path.join(here, "ca.nix")] + args + ["b", "c", "text"], nix_env))
         # The raw format reports resolutions the way `nix-build` does.
         _, want_msgs = run(nix_build + ["--log-format", "raw", "--argstr", "salt", "1", "c"], nix_env, stderr=True)
         rmtree(store)
@@ -98,7 +98,7 @@ def main():
             got_paths.append(run(ox + ["--store", store, "build", os.path.join(here, "ca.nix"), "-A", a, "--no-link"] + args, ox_env))
         check("output paths", sorted(set(want_paths)), sorted(got_paths))
         got_real = []
-        for a in ["b", "c"]:
+        for a in ["b", "c", "text"]:
             got_real += json.loads(run(ox + ["--store", store] + info + [os.path.join(here, "ca.nix"), "-A", a] + args, ox_env))
         check("realisations", sorted(want_real, key=lambda r: r["id"]), sorted(got_real, key=lambda r: r["id"]))
         b_out = [p for p in got_paths if p.endswith("-b")][0]

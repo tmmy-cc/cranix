@@ -220,6 +220,14 @@ fn derivation_inner(ev: &Eval, attrs: &Attrs, name: &str) -> R<Value> {
         let prefix = match hash_mode.as_deref() {
             None | Some("flat") => "",
             Some("recursive") | Some("nar") => "r:",
+            Some("text") => {
+                ev.opts.require_feature("dynamic-derivations")?;
+                "text:"
+            }
+            Some("git") => {
+                ev.opts.require_feature("git-hashing")?;
+                return err("git-hashed derivation outputs are not supported");
+            }
             Some(m) => return err(format!("invalid value '{m}' for 'outputHashMode'")),
         };
         drv.outputs.insert(
@@ -239,7 +247,7 @@ fn derivation_inner(ev: &Eval, attrs: &Attrs, name: &str) -> R<Value> {
             Some("flat") => "",
             Some("text") => {
                 ev.opts.require_feature("dynamic-derivations")?;
-                return err("text-hashed derivation outputs are not supported");
+                "text:"
             }
             Some("git") => {
                 ev.opts.require_feature("git-hashing")?;

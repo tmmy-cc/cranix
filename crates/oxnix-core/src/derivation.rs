@@ -79,27 +79,97 @@ impl Output {
         }
     }
 
-    /// The ingestion method and hash algorithm of a content-addressed
-    /// output (`r:sha256` and the like).
-    pub fn method_algo(&self) -> Option<(FileIngestion, HashAlgo)> {
-        let (method, algo) = match self.hash_algo.strip_prefix("r:") {
-            Some(a) => (FileIngestion::Recursive, a),
-            None => (FileIngestion::Flat, self.hash_algo.as_str()),
+    /// The method and hash algorithm of a content-addressed output, from
+    /// its `hashAlgo` field (`r:sha256`, `text:sha256`, `sha1`, ...).
+    pub fn method_algo(&self) -> Option<(CaMethod, HashAlgo)> {
+        let (method, algo) = if let Some(a) = self.hash_algo.strip_prefix("r:") {
+            (CaMethod::Nar, a)
+        } else if let Some(a) = self.hash_algo.strip_prefix("text:") {
+            (CaMethod::Text, a)
+        } else {
+            (CaMethod::Flat, self.hash_algo.as_str())
         };
         Some((method, HashAlgo::parse(algo)?))
     }
 
     /// The expected content hash of a fixed-output derivation.
-    pub fn fixed(&self) -> Option<(FileIngestion, Hash)> {
+    pub fn fixed(&self) -> Option<(CaMethod, Hash)> {
         if self.kind() != OutputKind::Fixed {
             return None;
         }
-        let (method, algo) = match self.hash_algo.strip_prefix("r:") {
-            Some(a) => (FileIngestion::Recursive, a),
-            None => (FileIngestion::Flat, self.hash_algo.as_str()),
-        };
-        let algo = HashAlgo::parse(algo)?;
+        let (method, algo) = self.method_algo()?;
         Some((method, Hash::parse_bare(&self.hash, algo).ok()?))
+    }
+}
+
+/// How the content of a content-addressed derivation output is hashed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaMethod {
+    /// The bytes of a single file.
+    Flat,
+    /// The NAR serialisation.
+    Nar,
+    /// The bytes of a single file, addressed like `builtins.toFile` text.
+    Text,
+}
+
+impl CaMethod {
+    /// The prefix of the `hashAlgo` field and of content addresses.
+    pub fn prefix(self) -> &'static str {
+        match self {
+            CaMethod::Flat => "",
+            CaMethod::Nar => "r:",
+            CaMethod::Text => "text:",
+        }
+    }
+
+    /// The name `nix derivation show` prints as `method`.
+    pub fn name(self) -> &'static str {
+        match self {
+            CaMethod::Flat => "flat",
+            CaMethod::Nar => "nar",
+            CaMethod::Text => "text",
+        }
+    }
+
+    /// How the content is serialised before hashing.
+    pub fn ingestion(self) -> FileIngestion {
+        match self {
+            CaMethod::Nar => FileIngestion::Recursive,
+            CaMethod::Flat | CaMethod::Text => FileIngestion::Flat,
+        }
+    }
+
+    /// The content address recorded for a path, e.g. `fixed:r:sha256:<nix32>`.
+    pub fn content_address(self, hash: &Hash) -> String {
+        match self {
+            CaMethod::Text => format!("text:{}:{}", hash.algo, hash.to_nix32()),
+            m => format!("fixed:{}{}:{}", m.prefix(), hash.algo, hash.to_nix32()),
+        }
+    }
+
+    /// The store path of content with `hash` and the given references.
+    pub fn make_path(self, sd: &StoreDir, hash: &Hash, name: &str, refs: &BTreeSet<StorePath>, self_ref: bool) -> Result<StorePath, String> {
+        match self {
+            CaMethod::Text => {
+                if self_ref {
+                    return Err("reference to self not allowed with text hashing".into());
+                }
+                if hash.algo != HashAlgo::Sha256 {
+                    return Err(format!("text hashing requires SHA-256, but '{name}' uses {}", hash.algo));
+                }
+                sd.make_text_path(name, hash, refs)
+            }
+            m => {
+                let sha256_nar = m == CaMethod::Nar && hash.algo == HashAlgo::Sha256;
+                if !sha256_nar && (self_ref || !refs.is_empty()) {
+                    return Err(format!(
+                        "'{name}' refers to store paths, which only content hashed as a SHA-256 NAR or as text may do"
+                    ));
+                }
+                sd.make_fixed_output_path(m.ingestion(), hash, name, refs, self_ref)
+            }
+        }
     }
 }
 
@@ -259,7 +329,7 @@ impl Derivation {
     ) -> Result<(), String> {
         if self.is_fixed_output() {
             let (method, hash) = self.outputs["out"].fixed().ok_or("invalid fixed-output hash")?;
-            let p = sd.make_fixed_output_path(method, &hash, &self.name, &BTreeSet::new(), false)?;
+            let p = method.make_path(sd, &hash, &self.name, &BTreeSet::new(), false)?;
             self.env.insert("out".into(), sd.print(&p));
             self.outputs.get_mut("out").unwrap().path = Some(p);
             return Ok(());
@@ -547,6 +617,23 @@ mod tests {
         assert!(r.input_drvs.is_empty() && r.input_srcs.contains(&b_out));
         assert_eq!(r.args[1], format!("echo {} > $out", sd.print(&b_out)));
         assert_eq!(r.outputs["out"].kind(), OutputKind::InputAddressed);
+    }
+
+    #[test]
+    fn text_fixed_output_matches_nix() {
+        // outputHashMode = "text" with the sha256 of "hello", as
+        // instantiated by Nix 2.24 with `dynamic-derivations` enabled.
+        let sd = StoreDir::default();
+        let o = Output {
+            path: None,
+            hash_algo: "text:sha256".into(),
+            hash: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into(),
+        };
+        let (method, hash) = o.fixed().unwrap();
+        assert_eq!(method, CaMethod::Text);
+        let p = method.make_path(&sd, &hash, "fod", &BTreeSet::new(), false).unwrap();
+        assert_eq!(p.base_name(), "g3am45jb0f8005kyvmyzz9a1kwq1knhj-fod");
+        assert!(method.make_path(&sd, &hash, "fod", &BTreeSet::new(), true).is_err());
     }
 
     #[test]

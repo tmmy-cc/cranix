@@ -141,7 +141,7 @@ impl Store {
             let scratch = scratch_of[name.as_str()];
             let real = self.real_path(scratch);
             let (method, algo) = drv.outputs[&name].method_algo().ok_or_else(|| format!("output '{name}' has an invalid hash algorithm"))?;
-            if method == FileIngestion::Flat {
+            if method.ingestion() == FileIngestion::Flat {
                 let md = fs::symlink_metadata(&real).map_err(|e| e.to_string())?;
                 if !md.is_file() || md.permissions().mode() & 0o100 != 0 {
                     return Err(format!(
@@ -154,7 +154,7 @@ impl Store {
                 self.rewrite_path(&real, &rewrites)?;
             }
             let old = scratch.hash_part().to_string();
-            let hash = hash_modulo(&real, method, algo, &old)?;
+            let hash = hash_modulo(&real, method.ingestion(), algo, &old)?;
             let mut self_ref = false;
             let mut others = BTreeSet::new();
             for r in &refs_of[&name] {
@@ -166,15 +166,10 @@ impl Store {
                     others.insert(r.clone());
                 }
             }
-            let sha256_nar = method == FileIngestion::Recursive && algo == HashAlgo::Sha256;
-            if !sha256_nar && (self_ref || !others.is_empty()) {
-                return Err(format!(
-                    "output '{name}' of '{}' refers to store paths, which only outputs hashed as sha256 NARs may do",
-                    self.dir.print(drv_path)
-                ));
-            }
             let path_name = output_path_name(&drv.name, &name);
-            let fin = self.dir.make_fixed_output_path(method, &hash, &path_name, &others, self_ref)?;
+            let fin = method
+                .make_path(&self.dir, &hash, &path_name, &others, self_ref)
+                .map_err(|e| format!("output '{name}' of '{}': {e}", self.dir.print(drv_path)))?;
             if &fin != scratch {
                 if self_ref {
                     self.rewrite_path(&real, &[(old.clone(), fin.hash_part().to_string())].into())?;
@@ -200,8 +195,7 @@ impl Store {
                 if self_ref {
                     references.insert(fin.clone());
                 }
-                let r = if method == FileIngestion::Recursive { "r:" } else { "" };
-                let ca = Some(format!("fixed:{r}{algo}:{}", hash.to_nix32()));
+                let ca = Some(method.content_address(&hash));
                 self.register(&PathInfo { path: fin.clone(), nar_hash, nar_size, references, deriver: Some(drv_path.clone()), ca })?;
             }
             result.insert(name, fin);
