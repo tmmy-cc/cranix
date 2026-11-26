@@ -1,6 +1,6 @@
 //! Build sandboxing with Nix's semantics: which derivations get a sandbox,
 //! which host paths they can see, and the platform mechanism that confines
-//! them (`sandbox-exec` on macOS).
+//! them (namespaces and a chroot on Linux, `sandbox-exec` on macOS).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -13,6 +13,8 @@ use crate::{Result, Store};
 
 #[cfg(target_os = "macos")]
 mod darwin;
+#[cfg(target_os = "linux")]
+mod linux;
 
 /// The `sandbox` setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,7 +120,6 @@ impl<'a> DrvAttrs<'a> {
 
 /// What a build's sandbox allows.
 #[derive(Debug)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) struct Spec {
     /// Confines the builder to its inputs and `paths`. In relaxed mode a
     /// derivation without it still runs under the minimal macOS profile.
@@ -234,6 +235,8 @@ pub(crate) fn plan(
 fn available() -> bool {
     static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *AVAILABLE.get_or_init(|| {
+        #[cfg(target_os = "linux")]
+        return linux::supported();
         #[cfg(target_os = "macos")]
         return Path::new(darwin::SANDBOX_EXEC).exists();
         #[allow(unreachable_code)]
@@ -271,6 +274,8 @@ pub(crate) enum Sandbox {
     None,
     #[cfg(target_os = "macos")]
     Darwin(darwin::Profile),
+    #[cfg(target_os = "linux")]
+    Linux(linux::Chroot),
 }
 
 impl Sandbox {
@@ -290,7 +295,13 @@ impl Sandbox {
             let outs: Vec<String> = outputs.iter().map(|p| store.dir.print(p)).collect();
             Ok(Sandbox::Darwin(darwin::Profile::write(&spec, store.dir.as_str(), &outs, top, opts)?))
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        {
+            let _ = outputs;
+            let root = std::path::PathBuf::from(format!("{}.chroot", store.real_path(drv_path).display()));
+            Ok(Sandbox::Linux(linux::Chroot::prepare(root, &spec, store.dir.as_str(), top, opts)?))
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
             let _ = (store, drv_path, spec, outputs, top, opts);
             Ok(Sandbox::None)
@@ -299,8 +310,11 @@ impl Sandbox {
 
     /// The build directory as the builder sees it.
     pub fn build_dir(&self, top: &str) -> String {
-        let _ = self;
-        top.to_string()
+        match self {
+            #[cfg(target_os = "linux")]
+            Sandbox::Linux(c) => c.build_dir.clone(),
+            _ => top.to_string(),
+        }
     }
 
     /// A command running `builder` inside the sandbox.
@@ -313,19 +327,30 @@ impl Sandbox {
             }
             #[cfg(target_os = "macos")]
             Sandbox::Darwin(p) => p.command(builder, args, top),
+            #[cfg(target_os = "linux")]
+            Sandbox::Linux(c) => c.command(builder, args),
         }
     }
 
     /// Moves the outputs a build left inside the sandbox into the store.
     pub fn collect_outputs(&self, store: &Store, outputs: &[&StorePath]) -> Result<()> {
-        let _ = (self, store, outputs);
-        Ok(())
+        match self {
+            #[cfg(target_os = "linux")]
+            Sandbox::Linux(c) => c.collect_outputs(store, outputs),
+            _ => {
+                let _ = (store, outputs);
+                Ok(())
+            }
+        }
     }
 
     /// Removes what `prepare` created outside the build directory.
     pub fn cleanup(&self) -> Result<()> {
-        let _ = self;
-        Ok(())
+        match self {
+            #[cfg(target_os = "linux")]
+            Sandbox::Linux(c) => c.cleanup(),
+            _ => Ok(()),
+        }
     }
 }
 
