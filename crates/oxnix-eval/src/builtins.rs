@@ -264,7 +264,7 @@ pub static PRIMOPS: &[PrimOp] = &[
         Ok(acc)
     }),
     prim!("fromJSON", 1, |ev, a| crate::print::from_json(&ev.force_str(&a[0])?.s)),
-    prim!("fromTOML", 1, |_, _| err("builtins.fromTOML is not supported")),
+    prim!("fromTOML", 1, |ev, a| crate::toml::from_toml(&ev.force_str(&a[0])?.s)),
     prim!("functionArgs", 1, |ev, a| match ev.force(&a[0])? {
         Value::Lambda(c) => match &c.def.formals {
             Some(f) => Ok(Value::attrs(Attrs::from_unsorted(

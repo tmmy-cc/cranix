@@ -8,6 +8,7 @@ pub mod error;
 pub mod eval;
 pub mod parser;
 pub mod print;
+pub mod toml;
 pub mod value;
 
 pub use error::RenderOptions;

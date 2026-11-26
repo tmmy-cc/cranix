@@ -227,3 +227,35 @@ with import /nix/store/smgkshm3r00a4rl7gw5ymgfqsd2k573l-source/lib; (systems.ela
 (import /nix/store/smgkshm3r00a4rl7gw5ymgfqsd2k573l-source {}).git.drvPath
 #---
 (import /nix/store/smgkshm3r00a4rl7gw5ymgfqsd2k573l-source {}).poppler.drvPath
+#---
+builtins.fromTOML "a = 1\nb = \"x\\ty\\u00e9\\U0001F600\"\nc = 'lit\\n'\nd = \"\"\"\nmulti\nline \\\n   cont\"\"\"\ne = '''\nraw\\n'''\nf = 0xff\ng = 0o17\nh = 0b101\ni = 1_000\nj = 3.14\nk = 1e3\nl = -0.0\nm = true\nn = [1, 2, [3, \"x\"]]\no = { x = 1, y.z = 2 }\n\"quoted key\" = 1\np.q.r = 3\n[t]\nu = 1\n[t.v]\nw = 2\n[[arr]]\nx = 1\n[[arr]]\nx = 2\n[[arr.sub]]\ny = 3\n"
+#---
+builtins.fromTOML "a = inf\nb = -inf\nc = +1\nd = +1.5\ne = nan\nf = 1e100\ng = 1e-7\nh = 1_0.5_0\ni = 5e-1"
+#---
+builtins.fromTOML "a = 9223372036854775808\nb = -9223372036854775809\nc = 0xDEAD_beef"
+#---
+builtins.fromTOML "[a.b]\nc = 1\n[a]\nd = 2\n[[x]]\n[[x]]\ny = 1\n[[x.z]]\n[x.w]\n[ 'k y' . \"z\" ]\nv = 2"
+#---
+builtins.fromTOML "a = [ 1,\n  2, # comment\n]\nb = [[1], ['x']]\nc = [{x=1},{y=2}]\nd = {}\n\"\" = 1\n1 = 2\n3.4 = 5\ntrue = 1 # trailing\r\n"
+#---
+builtins.fromTOML "a = \"\"\"\nx\"\"\"\"\"\nb = '''\n'''\nc = \"\\u0000\"\nd = \"\"\"\\\n\n  y\"\"\""
+#---
+builtins.fromTOML "a = 1979-05-27T07:32:00Z"
+#---
+builtins.fromTOML "a = 07:32:00"
+#---
+builtins.fromTOML "a = 1\na = 2"
+#---
+builtins.fromTOML "a.b = 1\n[a]\nc = 2"
+#---
+builtins.fromTOML "a = {b = 1}\n[a.c]\nd = 1"
+#---
+builtins.fromTOML "[a]\n[[a]]"
+#---
+builtins.fromTOML "a = { b = 1, }"
+#---
+builtins.fromTOML "a = 01"
+#---
+builtins.fromTOML "a = -0xff"
+#---
+builtins.fromTOML "a = \"\\x41\""
