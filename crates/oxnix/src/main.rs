@@ -54,6 +54,8 @@ global options:
                     substitute, secret-key-files, max-substitution-jobs
                     (and extra-*), read from ~/.config/oxnix/oxnix.conf and $OXNIX_CONFIG
   --store URL       for 'store path-info', read a binary cache (file:// or https://)
+  --timeout N, --max-silent-time N
+                    shorthands for the corresponding build settings
 ";
 
 struct Cli {
@@ -64,6 +66,8 @@ struct Cli {
     pure: bool,
     show_trace: bool,
     settings: Settings,
+    /// Build settings from `NIX_CONFIG` and `--option`, in order of precedence.
+    options: Vec<(String, String)>,
     rest: Vec<String>,
 }
 
@@ -89,8 +93,18 @@ fn parse_cli() -> Result<Cli, String> {
         pure: false,
         show_trace: false,
         settings: Settings::load()?,
+        options: Vec::new(),
         rest: Vec::new(),
     };
+    if let Ok(conf) = std::env::var("NIX_CONFIG") {
+        for (k, v) in parse_conf(&conf) {
+            if Settings::is_known(&k) {
+                cli.settings.set(&k, &v)?;
+            } else {
+                cli.options.push((k, v));
+            }
+        }
+    }
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().ok_or_else(|| format!("{name} requires an argument"));
@@ -116,7 +130,11 @@ fn parse_cli() -> Result<Cli, String> {
             "--option" => {
                 let n = val("--option")?;
                 let v = val("--option")?;
-                cli.settings.set(&n, &v)?;
+                if Settings::is_known(&n) {
+                    cli.settings.set(&n, &v)?;
+                } else {
+                    cli.options.push((n, v));
+                }
             }
             f if f.strip_prefix("--").is_some_and(|n| Settings::is_known(n) && !Settings::is_bool(n)) => {
                 let v = val(f)?;
@@ -124,6 +142,14 @@ fn parse_cli() -> Result<Cli, String> {
             }
             f if f.strip_prefix("--").is_some_and(Settings::is_bool) => cli.settings.set(&f[2..], "true")?,
             f if f.strip_prefix("--no-").is_some_and(Settings::is_bool) => cli.settings.set(&f[5..], "false")?,
+            "--timeout" => {
+                let v = val("--timeout")?;
+                cli.options.push(("timeout".into(), v));
+            }
+            "--max-silent-time" => {
+                let v = val("--max-silent-time")?;
+                cli.options.push(("max-silent-time".into(), v));
+            }
             "-h" | "--help" => {
                 print!("{USAGE}");
                 std::process::exit(0);
@@ -135,6 +161,18 @@ fn parse_cli() -> Result<Cli, String> {
         cli.search.extend(np.split(':').filter(|s| !s.is_empty()).filter_map(parse_search));
     }
     Ok(cli)
+}
+
+/// Parses `nix.conf` syntax: `name = value` lines, `#` comments.
+fn parse_conf(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|l| {
+            let l = l.split('#').next().unwrap_or("");
+            let (k, v) = l.split_once('=')?;
+            Some((k.trim().to_string(), v.trim().to_string()))
+        })
+        .filter(|(k, _)| !k.is_empty())
+        .collect()
 }
 
 fn store_url(cli: &Cli) -> Option<String> {
@@ -361,6 +399,11 @@ fn cmd_instantiate(cli: &Cli, args: &[String], build: bool) -> Result<(), String
         return Ok(());
     }
     let mut opts = BuildOptions { system: cli.system.clone(), ..Default::default() };
+    for (k, v) in &cli.options {
+        if !opts.set(k, v)? {
+            eprintln!("warning: unknown setting '{k}'");
+        }
+    }
     for (k, v) in &t.opts {
         match k.as_str() {
             "-j" | "--max-jobs" => opts.jobs = v.parse().map_err(|_| "invalid -j value")?,
@@ -369,7 +412,7 @@ fn cmd_instantiate(cli: &Cli, args: &[String], build: bool) -> Result<(), String
         }
     }
     opts.print_logs = t.flags.contains("-L") || t.flags.contains("--print-build-logs");
-    opts.keep_failed = t.flags.contains("-K") || t.flags.contains("--keep-failed");
+    opts.keep_failed |= t.flags.contains("-K") || t.flags.contains("--keep-failed");
     let paths: Vec<StorePath> = drvs.iter().map(|(d, _)| d.clone()).collect();
     let res = ev.store.realise(&paths, &opts)?;
     let link_base = t.opts.iter().find(|(k, _)| k == "-o" || k == "--out-link").map(|(_, v)| v.clone()).unwrap_or("result".into());

@@ -5,9 +5,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use oxnix_core::hash::{Hash, HashAlgo, HashSink};
 use oxnix_core::{nar, Derivation, FileIngestion, StorePath};
@@ -24,12 +26,61 @@ pub struct BuildOptions {
     pub print_logs: bool,
     pub keep_failed: bool,
     pub system: String,
+    /// Seconds a build may run; 0 for no limit.
+    pub timeout: u64,
+    /// Seconds a build may go without output; 0 for no limit.
+    pub max_silent_time: u64,
 }
 
 impl Default for BuildOptions {
     fn default() -> Self {
         let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-        BuildOptions { jobs: n, cores: n, print_logs: false, keep_failed: false, system: host_system() }
+        BuildOptions {
+            jobs: n,
+            cores: n,
+            print_logs: false,
+            keep_failed: false,
+            system: host_system(),
+            timeout: 0,
+            max_silent_time: 0,
+        }
+    }
+}
+
+fn parse_bool(name: &str, v: &str) -> Result<bool> {
+    match v {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(format!("option '{name}' has invalid value '{v}'; expected 'true' or 'false'")),
+    }
+}
+
+fn parse_num<T: std::str::FromStr>(name: &str, v: &str) -> Result<T> {
+    v.parse().map_err(|_| format!("option '{name}' has invalid value '{v}'; expected an integer"))
+}
+
+impl BuildOptions {
+    /// Applies the Nix setting `name` (`--option NAME VALUE`, `NIX_CONFIG`).
+    /// Returns `Ok(false)` for settings the builder does not use.
+    pub fn set(&mut self, name: &str, value: &str) -> Result<bool> {
+        match name {
+            "timeout" | "build-timeout" => self.timeout = parse_num(name, value)?,
+            "max-silent-time" | "build-max-silent-time" => self.max_silent_time = parse_num(name, value)?,
+            "keep-failed" => self.keep_failed = parse_bool(name, value)?,
+            "max-jobs" | "build-max-jobs" => {
+                self.jobs = if value == "auto" {
+                    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+                } else {
+                    parse_num(name, value)?
+                }
+            }
+            "cores" | "build-cores" => {
+                let n: usize = parse_num(name, value)?;
+                self.cores = if n == 0 { std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) } else { n };
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
     }
 }
 
@@ -358,6 +409,16 @@ impl Store {
         fs::create_dir_all(&top).map_err(|e| format!("creating build directory: {e}"))?;
         let top_s = top.to_string_lossy().into_owned();
 
+        let r = self.run_in(drv_path, drv, &top, &top_s, opts);
+        if r.is_ok() || !opts.keep_failed {
+            fsutil::remove_all(&top)?;
+        }
+        r
+    }
+
+    fn run_in(&self, drv_path: &StorePath, drv: &Derivation, top: &Path, top_s: &str, opts: &BuildOptions) -> Result<()> {
+        let tmp = top_s.to_string();
+
         let mut env: BTreeMap<String, String> = BTreeMap::new();
         env.insert("PATH".into(), "/path-not-set".into());
         env.insert("HOME".into(), "/homeless-shelter".into());
@@ -370,16 +431,15 @@ impl Store {
             if pass_as_file.contains(k.as_str()) {
                 let f = format!(".attr-{}", Hash::sha256(k.as_bytes()).to_nix32());
                 fs::write(top.join(&f), v).map_err(|e| format!("writing {f}: {e}"))?;
-                env.insert(format!("{k}Path"), format!("{top_s}/{f}"));
+                env.insert(format!("{k}Path"), format!("{tmp}/{f}"));
             } else {
                 env.insert(k.clone(), v.clone());
             }
         }
         if let Some(json) = drv.env.get("__json") {
             env.remove("__json");
-            let f = top.join(".attrs.json");
-            fs::write(&f, json).map_err(|e| format!("writing .attrs.json: {e}"))?;
-            env.insert("NIX_ATTRS_JSON_FILE".into(), f.to_string_lossy().into_owned());
+            fs::write(top.join(".attrs.json"), json).map_err(|e| format!("writing .attrs.json: {e}"))?;
+            env.insert("NIX_ATTRS_JSON_FILE".into(), format!("{tmp}/.attrs.json"));
         }
         if drv.is_fixed_output() {
             for v in drv.env.get("impureEnvVars").map(|s| s.split_whitespace()).into_iter().flatten() {
@@ -389,30 +449,60 @@ impl Store {
             }
         }
         for k in ["NIX_BUILD_TOP", "TMPDIR", "TEMPDIR", "TMP", "TEMP", "PWD"] {
-            env.insert(k.into(), top_s.clone());
+            env.insert(k.into(), tmp.clone());
         }
         env.insert("NIX_LOG_FD".into(), "2".into());
         env.insert("TERM".into(), "xterm-256color".into());
 
         let log_path = self.log_path(drv_path);
         let log = Mutex::new(fs::File::create(&log_path).map_err(|e| format!("creating log: {e}"))?);
-        let mut child = Command::new(&drv.builder)
+        let failure = |what: String| {
+            let tail = tail_lines(&log_path, 25);
+            let kept = if opts.keep_failed { format!("\nbuild directory kept at '{top_s}'") } else { String::new() };
+            format!("{what}; last log lines:\n{tail}{kept}")
+        };
+        // One pipe carries stdout and stderr, so their lines interleave in
+        // order.
+        let (out_r, out_w) = log_pipe().map_err(|e| format!("creating log pipe: {e}"))?;
+        let out_w2 = out_w.try_clone().map_err(|e| format!("creating log pipe: {e}"))?;
+        let spawned = Command::new(&drv.builder)
             .args(&drv.args)
+            .current_dir(top)
             .env_clear()
             .envs(&env)
-            .current_dir(&top)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("executing builder '{}' of '{}': {e}", drv.builder, self.dir.print(drv_path)))?;
+            .stdout(out_w)
+            .stderr(out_w2)
+            // Its own process group, so the whole build can be killed.
+            .process_group(0)
+            .spawn();
+        let mut child = match spawned {
+            Ok(c) => c,
+            Err(e) => {
+                let mut msg = Vec::new();
+                let _ = (&out_r).read_to_end(&mut msg);
+                let _ = log.lock().unwrap().write_all(&msg);
+                let what = format!("executing builder '{}' of '{}': {e}", drv.builder, self.dir.print(drv_path));
+                return Err(failure(what));
+            }
+        };
+        let pgid = child.id() as libc::pid_t;
 
-        let pump = |r: Box<dyn Read + Send>| {
+        let start = Instant::now();
+        // Milliseconds since `start` at the last line of output.
+        let last_output = AtomicU64::new(0);
+        let finished = Mutex::new(false);
+        let finished_cv = Condvar::new();
+        let timed_out: Mutex<Option<String>> = Mutex::new(None);
+
+        let pump = |r: fs::File| {
             let log = &log;
             let name = &drv.name;
+            let last_output = &last_output;
             move || {
                 for line in BufReader::new(r).split(b'\n') {
                     let Ok(line) = line else { break };
+                    last_output.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
                     let mut l = log.lock().unwrap();
                     let _ = l.write_all(&line);
                     let _ = l.write_all(b"\n");
@@ -423,23 +513,60 @@ impl Store {
                 }
             }
         };
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
+        let watchdog = || {
+            let mut done = finished.lock().unwrap();
+            loop {
+                if *done {
+                    return;
+                }
+                let now = start.elapsed();
+                let mut deadline: Option<Duration> = None;
+                let mut fire = None;
+                if opts.timeout > 0 {
+                    let d = Duration::from_secs(opts.timeout);
+                    if now >= d {
+                        fire = Some(format!("timed out after {} seconds", opts.timeout));
+                    }
+                    deadline = Some(d);
+                }
+                if opts.max_silent_time > 0 {
+                    let d = Duration::from_millis(last_output.load(Ordering::Relaxed)) + Duration::from_secs(opts.max_silent_time);
+                    if now >= d {
+                        fire = Some(format!("timed out after {} seconds of silence", opts.max_silent_time));
+                    }
+                    deadline = Some(deadline.map_or(d, |x| x.min(d)));
+                }
+                if let Some(why) = fire {
+                    *timed_out.lock().unwrap() = Some(why);
+                    kill_group(pgid);
+                    return;
+                }
+                done = match deadline {
+                    Some(d) => finished_cv.wait_timeout(done, d - now).unwrap().0,
+                    None => finished_cv.wait(done).unwrap(),
+                };
+            }
+        };
         let status = std::thread::scope(|s| {
-            s.spawn(pump(Box::new(stdout)));
-            s.spawn(pump(Box::new(stderr)));
-            child.wait()
+            s.spawn(pump(out_r));
+            s.spawn(watchdog);
+            // Processes the builder left behind are killed with it, before
+            // the builder is reaped so its process group still exists.
+            let r = wait_exited(pgid).and_then(|()| {
+                kill_group(pgid);
+                child.wait()
+            });
+            *finished.lock().unwrap() = true;
+            finished_cv.notify_all();
+            r
         })
         .map_err(|e| format!("waiting for builder: {e}"))?;
 
-        let failed = !status.success();
-        if !failed || !opts.keep_failed {
-            fsutil::remove_all(&top)?;
+        if let Some(why) = timed_out.into_inner().unwrap() {
+            return Err(failure(format!("building of '{}' {why}", self.dir.print(drv_path))));
         }
-        if failed {
-            let tail = tail_lines(&log_path, 25);
-            let kept = if opts.keep_failed { format!("\nbuild directory kept at '{top_s}'") } else { String::new() };
-            return Err(format!("builder for '{}' failed with {status}; last log lines:\n{tail}{kept}", self.dir.print(drv_path)));
+        if !status.success() {
+            return Err(failure(format!("builder for '{}' failed with {status}", self.dir.print(drv_path))));
         }
         Ok(())
     }
@@ -499,6 +626,44 @@ fn unpack_nar(url: &str, file: &Path, dest: &Path) -> Result<()> {
             r
         }
     }
+}
+
+/// A pipe whose ends are closed on exec.
+fn log_pipe() -> std::io::Result<(fs::File, fs::File)> {
+    use std::os::fd::FromRawFd;
+    let mut fds = [0; 2];
+    // SAFETY: `fds` has room for both descriptors, which are owned by the
+    // returned files.
+    unsafe {
+        if libc::pipe(fds.as_mut_ptr()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let files = (fs::File::from_raw_fd(fds[0]), fs::File::from_raw_fd(fds[1]));
+        for fd in fds {
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+        Ok(files)
+    }
+}
+
+/// Waits until `pid` has exited, leaving it unreaped.
+fn wait_exited(pid: libc::pid_t) -> std::io::Result<()> {
+    loop {
+        // SAFETY: `info` is a valid out-pointer for waitid.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        if unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) } == 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+fn kill_group(pgid: libc::pid_t) {
+    // SAFETY: kill has no memory-safety preconditions.
+    unsafe { libc::kill(-pgid, libc::SIGKILL) };
 }
 
 fn platform_compatible(want: &str, have: &str) -> bool {
