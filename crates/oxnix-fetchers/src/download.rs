@@ -51,13 +51,12 @@ pub fn download(url: &str, headers: &Headers, expected_etag: Option<&str>, dest:
     let mut urls = vec![url.to_string()];
     let mut etag = String::new();
     let mut immutable_url = None;
-    // Only the headers of the last response in a redirect chain count;
-    // each response starts with its status line.
+    // Each response of a redirect chain starts with its status line; the
+    // ETag is the final response's, an immutable link may come from any.
     for line in hdrs.lines() {
         let line = line.trim_end_matches('\r');
         if line.starts_with("HTTP/") {
             etag.clear();
-            immutable_url = None;
             continue;
         }
         let Some((k, v)) = line.split_once(':') else { continue };
@@ -65,12 +64,12 @@ pub fn download(url: &str, headers: &Headers, expected_etag: Option<&str>, dest:
         match k.to_ascii_lowercase().as_str() {
             "etag" => etag = v.to_string(),
             "location" => {}
-            "link" => {
+            "link" | "x-amz-meta-link" => {
                 for part in v.split(',') {
                     let part = part.trim();
                     if let Some(rest) = part.strip_prefix('<') {
                         if let Some((u, params)) = rest.split_once('>') {
-                            if params.trim() == "; rel=\"immutable\"" {
+                            if params.eq_ignore_ascii_case("; rel=\"immutable\"") {
                                 immutable_url = Some(u.to_string());
                             }
                         }

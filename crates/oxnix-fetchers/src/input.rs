@@ -381,7 +381,8 @@ impl Input {
         storeutil::fixed_path(store, &self.get_name(), &h)
     }
 
-    fn fingerprint(&self, store: &Store) -> Option<String> {
+    /// Identifies the tree's contents for caching; `None` for unlocked inputs.
+    pub fn fingerprint(&self, store: &Store) -> Option<String> {
         match self.ty().as_str() {
             "git" => {
                 let rev = self.get_rev().ok()??;
@@ -394,7 +395,7 @@ impl Input {
                 let p = get_str(&self.attrs, "path").ok()??;
                 let (sp, rest) = store.dir.to_store_path(&p)?;
                 let h = storeutil::nar_hash(store, &sp).ok()?;
-                Some(format!("path:{}:{}", h.to_base16(), if rest.is_empty() { "/" } else { rest }))
+                Some(format!("path:{}:{rest}", h.to_base16()))
             }
             _ => match self.get_nar_hash().ok()? {
                 Some(h) => Some(h.to_sri()),
