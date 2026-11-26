@@ -14,6 +14,7 @@ use oxnix_core::{NarInfo, StorePath};
 
 use crate::binary_cache::BinaryCache;
 use crate::config::Settings;
+use crate::http::HttpClient;
 use crate::{canonicalise, fsutil, PathInfo, Result, Store};
 
 /// The caches a store substitutes from, and how much it trusts them.
@@ -41,7 +42,7 @@ impl Substituters {
         let mut caches = Vec::new();
         for u in &s.substituters {
             match BinaryCache::open(u) {
-                Ok(c) => caches.push(c),
+                Ok(c) => caches.push(c.with_http(http_client(s))),
                 Err(e) => eprintln!("warning: ignoring substituter: {e}"),
             }
         }
@@ -51,6 +52,11 @@ impl Substituters {
     pub fn is_empty(&self) -> bool {
         self.caches.is_empty()
     }
+}
+
+/// The HTTP client for caches, configured by `s`.
+pub fn http_client(s: &Settings) -> HttpClient {
+    HttpClient::new().netrc_file(Some(s.netrc_file.clone().into())).attempts(s.download_attempts)
 }
 
 /// Parses `trusted-public-keys`, warning about malformed entries.

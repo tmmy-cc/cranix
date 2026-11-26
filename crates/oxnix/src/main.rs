@@ -13,7 +13,7 @@ use oxnix_eval::{print, Eval, Options, RenderOptions, Value};
 use oxnix_store::binary_cache::{read_secret_keys, BinaryCache};
 use oxnix_store::build::{default_root, host_system, BuildOptions};
 use oxnix_store::config::Settings;
-use oxnix_store::substitute::{trusted_keys, Substituters};
+use oxnix_store::substitute::{http_client, trusted_keys, Substituters};
 use oxnix_store::Store;
 
 #[cfg(not(feature = "dhat-heap"))]
@@ -762,9 +762,9 @@ fn cache_closure(cache: &BinaryCache, dir: &oxnix_core::StoreDir, root: &StorePa
 }
 
 /// `store path-info --store URL`: reads narinfos from a binary cache.
-fn cmd_cache_path_info(_cli: &Cli, url: &str, args: &[String]) -> Result<(), String> {
+fn cmd_cache_path_info(cli: &Cli, url: &str, args: &[String]) -> Result<(), String> {
     let a = parse_path_info_args(args)?;
-    let cache = BinaryCache::open(url)?;
+    let cache = BinaryCache::open(url)?.with_http(http_client(&cli.settings));
     let dir = oxnix_core::StoreDir::new(cache.info()?.store_dir);
     let mut infos = NarInfos::new();
     let mut roots = Vec::new();
@@ -848,7 +848,8 @@ fn cmd_copy(cli: &Cli, args: &[String]) -> Result<(), String> {
     let roots: Vec<StorePath> = paths.iter().map(|p| parse_store_path(&store.dir, p)).collect::<Result<_, _>>()?;
     match (to, from) {
         (Some(to), None) => {
-            let cache = BinaryCache::open(&to)?;
+            let s = &cli.settings;
+            let cache = BinaryCache::open(&to)?.with_http(http_client(s));
             cache.init_for_writing(&store.dir)?;
             let mut key_files: Vec<&str> = cli.settings.secret_key_files.iter().map(String::as_str).collect();
             key_files.extend(cache.param("secret-key"));
@@ -889,9 +890,10 @@ fn cmd_copy(cli: &Cli, args: &[String]) -> Result<(), String> {
             Ok(())
         }
         (None, Some(from)) => {
-            let cache = BinaryCache::open(&from)?;
-            let keys = trusted_keys(&cli.settings.trusted_public_keys);
-            store.set_substituters(Substituters::new(vec![cache], keys, check_sigs, cli.settings.max_substitution_jobs));
+            let s = &cli.settings;
+            let cache = BinaryCache::open(&from)?.with_http(http_client(s));
+            let keys = trusted_keys(&s.trusted_public_keys);
+            store.set_substituters(Substituters::new(vec![cache], keys, check_sigs, s.max_substitution_jobs));
             let failed = store.substitute_paths(&roots)?;
             if let Some(p) = failed.first() {
                 return Err(format!("path '{}' is not available from '{from}'", store.dir.print(p)));

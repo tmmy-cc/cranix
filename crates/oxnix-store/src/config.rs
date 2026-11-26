@@ -19,6 +19,10 @@ pub struct Settings {
     pub substitute: bool,
     pub secret_key_files: Vec<String>,
     pub max_substitution_jobs: usize,
+    /// Credentials for HTTP caches, used when the file exists.
+    pub netrc_file: String,
+    /// How many times an HTTP request is tried before giving up.
+    pub download_attempts: u32,
 }
 
 impl Default for Settings {
@@ -30,6 +34,8 @@ impl Default for Settings {
             substitute: true,
             secret_key_files: Vec::new(),
             max_substitution_jobs: 16,
+            netrc_file: config_dir().join("netrc").to_string_lossy().into_owned(),
+            download_attempts: 5,
         }
     }
 }
@@ -40,6 +46,10 @@ fn parse_bool(name: &str, v: &str) -> Result<bool> {
         "false" => Ok(false),
         _ => Err(format!("invalid Boolean value '{v}' for setting '{name}'")),
     }
+}
+
+fn parse_int<T: std::str::FromStr>(name: &str, v: &str) -> Result<T> {
+    v.parse().map_err(|_| format!("invalid integer '{v}' for setting '{name}'"))
 }
 
 fn words(v: &str) -> Vec<String> {
@@ -57,7 +67,14 @@ impl Settings {
         let base = name.strip_prefix("extra-").unwrap_or(name);
         matches!(
             base,
-            "substituters" | "trusted-public-keys" | "require-sigs" | "substitute" | "secret-key-files" | "max-substitution-jobs"
+            "substituters"
+                | "trusted-public-keys"
+                | "require-sigs"
+                | "substitute"
+                | "secret-key-files"
+                | "max-substitution-jobs"
+                | "netrc-file"
+                | "download-attempts"
         )
     }
 
@@ -80,8 +97,15 @@ impl Settings {
                 return Ok(());
             }
             "max-substitution-jobs" if !extra => {
-                self.max_substitution_jobs =
-                    value.parse().map_err(|_| format!("invalid integer '{value}' for setting '{name}'"))?;
+                self.max_substitution_jobs = parse_int(name, value)?;
+                return Ok(());
+            }
+            "netrc-file" if !extra => {
+                self.netrc_file = value.to_string();
+                return Ok(());
+            }
+            "download-attempts" if !extra => {
+                self.download_attempts = parse_int(name, value)?;
                 return Ok(());
             }
             _ => {
@@ -140,12 +164,17 @@ impl Settings {
     }
 }
 
-pub fn config_file() -> PathBuf {
+/// `$XDG_CONFIG_HOME/oxnix`, by default `~/.config/oxnix`.
+pub fn config_dir() -> PathBuf {
     let dir = match std::env::var("XDG_CONFIG_HOME") {
         Ok(d) if !d.is_empty() => PathBuf::from(d),
         _ => PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".config"),
     };
-    dir.join("oxnix/oxnix.conf")
+    dir.join("oxnix")
+}
+
+pub fn config_file() -> PathBuf {
+    config_dir().join("oxnix.conf")
 }
 
 #[cfg(test)]
@@ -167,6 +196,9 @@ mod tests {
         assert_eq!(s.substituters, ["file:///a", "https://b", "file:///c"]);
         assert_eq!(s.trusted_public_keys, [DEFAULT_CACHE_KEY, "k:AAAA"]);
         assert!(!s.require_sigs);
+        s.apply_text("download-attempts = 2\nnetrc-file = /n\n", &dir).unwrap();
+        assert_eq!((s.download_attempts, s.netrc_file.as_str()), (2, "/n"));
+        assert!(s.apply_text("download-attempts = soon", &dir).is_err());
         assert!(s.apply_text("require-sigs = maybe", &dir).is_err());
         assert!(s.apply_text("include missing.conf", &dir).is_err());
         assert!(s.apply_text("no equals sign", &dir).is_err());

@@ -1,13 +1,13 @@
 //! Client for binary caches in Nix's format: a `nix-cache-info` file,
 //! one `<hash>.narinfo` per store path and compressed NARs under `nar/`.
 //! `file://` caches are directories; `http(s)://` caches are accessed
-//! with curl, which also uploads to caches that accept `PUT`.
+//! through an [`HttpClient`], which also uploads to caches that accept
+//! `PUT`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
@@ -15,6 +15,7 @@ use oxnix_core::hash::{HashAlgo, HashSink};
 use oxnix_core::signing::SecretKey;
 use oxnix_core::{nar, NarInfo, StoreDir};
 
+use crate::http::HttpClient;
 use crate::{fsutil, PathInfo, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,45 +161,6 @@ impl<A: Write, B: Write> Write for Tee<'_, A, B> {
     }
 }
 
-/// The body of a download; reports curl's failure once the stream ends.
-struct CurlReader {
-    child: Child,
-    stdout: ChildStdout,
-    url: String,
-}
-
-impl Read for CurlReader {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = self.stdout.read(buf)?;
-        if n == 0 && !buf.is_empty() {
-            let mut msg = String::new();
-            if let Some(e) = self.child.stderr.as_mut() {
-                let _ = e.read_to_string(&mut msg);
-            }
-            let st = self.child.wait()?;
-            if !st.success() {
-                return Err(io::Error::other(format!("downloading '{}': {}", self.url, msg.trim())));
-            }
-        }
-        Ok(n)
-    }
-}
-
-impl Drop for CurlReader {
-    fn drop(&mut self) {
-        if let Ok(None) = self.child.try_wait() {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
-    }
-}
-
-fn curl() -> Command {
-    let mut c = Command::new("curl");
-    c.args(["--silent", "--show-error", "--location", "--retry", "3"]);
-    c
-}
-
 #[derive(Clone, Debug)]
 pub struct CacheInfo {
     pub store_dir: String,
@@ -216,6 +178,7 @@ pub struct BinaryCache {
     pub url: String,
     location: Location,
     params: BTreeMap<String, String>,
+    http: HttpClient,
     info: OnceLock<std::result::Result<CacheInfo, String>>,
 }
 
@@ -246,7 +209,14 @@ impl BinaryCache {
         } else {
             return Err(format!("don't know how to open binary cache '{url}'; use a file:// or https:// URL"));
         };
-        Ok(BinaryCache { url: base, location, params, info: OnceLock::new() })
+        Ok(BinaryCache { url: base, location, params, http: HttpClient::default(), info: OnceLock::new() })
+    }
+
+    /// Makes HTTP requests with `http`, which carries for example the
+    /// credentials for this cache.
+    pub fn with_http(mut self, http: HttpClient) -> BinaryCache {
+        self.http = http;
+        self
     }
 
     pub fn param(&self, name: &str) -> Option<&str> {
@@ -274,22 +244,11 @@ impl BinaryCache {
             };
         }
         let url = self.http_url(rel);
-        let out = curl()
-            .args(["--write-out", "\n%{http_code}"])
-            .arg(&url)
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| format!("running curl: {e}"))?;
-        if !out.status.success() {
-            return Err(format!("downloading '{url}': {}", String::from_utf8_lossy(&out.stderr).trim()));
-        }
-        let body = out.stdout;
-        let split = body.iter().rposition(|&b| b == b'\n').unwrap_or(0);
-        let code = String::from_utf8_lossy(&body[split..]).trim().to_string();
-        match code.as_str() {
-            "200" => Ok(Some(body[..split].to_vec())),
+        let resp = self.http.get(&url)?;
+        match resp.status {
+            200 => Ok(Some(resp.body)),
             // S3 answers 403 for objects that do not exist.
-            "404" | "403" | "410" => Ok(None),
+            404 | 403 | 410 => Ok(None),
             c => Err(format!("downloading '{url}': HTTP status {c}")),
         }
     }
@@ -300,29 +259,14 @@ impl BinaryCache {
             let f = fs::File::open(&p).map_err(|e| format!("opening '{}': {e}", p.display()))?;
             return Ok(Box::new(io::BufReader::new(f)));
         }
-        let url = self.http_url(rel);
-        let mut child = curl()
-            .arg("--fail")
-            .arg(&url)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("running curl: {e}"))?;
-        let stdout = child.stdout.take().unwrap();
-        Ok(Box::new(CurlReader { child, stdout, url }))
+        Ok(Box::new(self.http.open(&self.http_url(rel))?))
     }
 
     pub fn file_exists(&self, rel: &str) -> Result<bool> {
         if let Some(p) = self.file_path(rel) {
             return Ok(p.exists());
         }
-        let url = self.http_url(rel);
-        let out = curl()
-            .args(["--head", "--output", "/dev/null", "--write-out", "%{http_code}"])
-            .arg(&url)
-            .output()
-            .map_err(|e| format!("running curl: {e}"))?;
-        Ok(String::from_utf8_lossy(&out.stdout).trim() == "200")
+        Ok(self.http.head(&self.http_url(rel))? == 200)
     }
 
     /// Stores the file at `src` as `rel`, replacing any previous one.
@@ -334,18 +278,7 @@ impl BinaryCache {
             fs::copy(src, &tmp).map_err(|e| format!("writing '{}': {e}", tmp.display()))?;
             return fs::rename(&tmp, &dest).map_err(|e| format!("writing '{}': {e}", dest.display()));
         }
-        let url = self.http_url(rel);
-        let out = curl()
-            .args(["--fail", "--upload-file"])
-            .arg(src)
-            .args(["--header", &format!("Content-Type: {content_type}"), "--output", "/dev/null"])
-            .arg(&url)
-            .output()
-            .map_err(|e| format!("running curl: {e}"))?;
-        if !out.status.success() {
-            return Err(format!("uploading to '{url}': {}", String::from_utf8_lossy(&out.stderr).trim()));
-        }
-        Ok(())
+        self.http.put_file(&self.http_url(rel), src, content_type)
     }
 
     fn put_bytes(&self, rel: &str, data: &[u8], content_type: &str) -> Result<()> {
@@ -501,6 +434,8 @@ impl BinaryCache {
             let mut all: BTreeSet<String> = sigs.iter().cloned().collect();
             all.extend(keys.iter().map(|k| k.sign(fp.as_bytes())));
             ni.sigs = all.into_iter().collect();
+            // The narinfo goes up last, so that a cache never offers a
+            // path whose NAR is missing.
             self.put_bytes(&format!("{}.narinfo", info.path.hash_part()), ni.to_text(dir).as_bytes(), "text/x-nix-narinfo")?;
             Ok(ni)
         })();

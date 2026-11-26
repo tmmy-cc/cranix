@@ -10,6 +10,7 @@ pub mod binary_cache;
 pub mod build;
 pub mod config;
 mod fsutil;
+pub mod http;
 pub mod refs;
 pub mod substitute;
 
