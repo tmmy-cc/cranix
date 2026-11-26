@@ -203,7 +203,8 @@ pub fn present_outputs(ev: &Eval, drvs: &[StorePath]) -> Option<BTreeMap<StorePa
 }
 
 /// Makes sure the outputs exist, building only what is missing from this
-/// store and the host store.
+/// store and the host store: through a daemon given with `--store`,
+/// locally, or on the configured remote builders.
 pub fn realise(ev: &Eval, cli: &Cli, drvs: &[(StorePath, String)]) -> Result<Vec<String>, String> {
     realise_opt(ev, cli, drvs, false)
 }
@@ -221,16 +222,44 @@ fn realise_opt(ev: &Eval, cli: &Cli, drvs: &[(StorePath, String)], best_effort: 
         paths.push(s);
     }
     if !missing.is_empty() {
-        if best_effort && !ev.store.can_build() {
-            for d in &missing {
-                cranix_fetchers::warn(format!("not building '{}': this store cannot build (use --store DIR)", ev.store.dir.print(d)));
-            }
-            return Ok(paths);
+        match build_missing(ev, cli, &missing) {
+            Err(BuildError::Impossible(e)) if best_effort => cranix_fetchers::warn(e),
+            Err(BuildError::Impossible(e) | BuildError::Failed(e)) => return Err(e),
+            Ok(()) => {}
         }
-        let opts = crate::build_options(cli);
-        ev.store.realise(&missing, &opts)?;
     }
     Ok(paths)
+}
+
+enum BuildError {
+    /// Nothing is configured that could build here.
+    Impossible(String),
+    Failed(String),
+}
+
+/// Builds `missing`: through the store `--store` names when it is a
+/// daemon, else in this store, which substitutes what it can and hands
+/// builds to the configured remote builders.
+fn build_missing(ev: &Eval, cli: &Cli, missing: &[StorePath]) -> Result<(), BuildError> {
+    let mut opts = crate::build_options(cli);
+    if let Some(u) = &cli.remote {
+        let mut session = crate::remote::Session::open(u).map_err(BuildError::Failed)?;
+        session.realise(&ev.store, missing, &opts).map_err(BuildError::Failed)?;
+        return Ok(());
+    }
+    crate::remote::configure_builders(&mut opts, &cli.settings.builders).map_err(BuildError::Failed)?;
+    let res = ev.store.realise(missing, &opts);
+    if res.is_err() && !ev.store.can_build() && opts.hook.is_none() {
+        let names: Vec<String> = missing.iter().map(|d| format!("'{}'", ev.store.dir.print(d))).collect();
+        return Err(BuildError::Impossible(format!(
+            "cannot build {}: this store keeps '{}' paths elsewhere, so it cannot run builders, and no remote builders are configured; \
+             build through the Nix daemon with --store daemon, set 'builders', or use a store that can build with --store DIR",
+            names.join(", "),
+            ev.store.dir.as_str()
+        )));
+    }
+    res.map_err(BuildError::Failed)?;
+    Ok(())
 }
 
 /// `%F %T` of a timestamp in UTC, or in local time like `localtime(3)`.
