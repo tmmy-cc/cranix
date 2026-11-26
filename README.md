@@ -17,7 +17,7 @@ bootstrap graph hashes identically.
 | Crate          | Lines | Contents |
 |----------------|------:|----------|
 | `oxnix-core`   | 1.2k  | Hashes (md5/sha1/sha256/sha512), nix-base32, SRI, store paths and their fingerprints, streaming NAR writer/reader, derivations (ATerm, `hashDerivationModulo`, output paths) |
-| `oxnix-store`  | 1.0k  | Local store, path metadata, `add_text`/`add_path`, reference scanning, closures, GC roots and collection, verification, parallel builder |
+| `oxnix-store`  | 2.5k  | Local store, path metadata, `add_text`/`add_path`, reference scanning, closures, GC roots and collection, verification, parallel builder, build sandbox |
 | `oxnix-eval`   | 4.6k  | Lexer/parser, scope-resolving compiler, lazy evaluator, ~110 builtins, `derivationStrict`, printing, JSON |
 | `oxnix`        | 0.5k  | CLI |
 
@@ -72,6 +72,25 @@ attributes, `impureEnvVars` for fixed-output derivations). Outputs are
 scanned for references against the input closure with a windowed scanner,
 fixed-output hashes are verified, logs are kept per derivation and the tail
 is shown on failure. `builtin:fetchurl` is implemented with `curl`.
+Each builder runs in its own process group, which is killed when it exits,
+fails or exceeds `timeout` or `max-silent-time`.
+
+**Sandbox.** The `sandbox` setting (`true`, `false` or `relaxed`; enabled by
+default on Linux, disabled on macOS, as in Nix) confines builders to their
+input closure, `sandbox-paths` and their build directory. On Linux the
+builder is PID 1 of new user, mount, PID, IPC, UTS and network namespaces,
+in a chroot assembled from bind mounts (inputs and sandbox paths read-only)
+with minimal `/dev`, `/proc`, `/dev/shm`, a writable `/tmp`, the build
+directory at `/build`, hostname `localhost`, a loopback-only network and
+Nix's `/etc/passwd`, `/etc/group` and `/etc/hosts`. Inside, it is `nixbld`
+(uid 1000, gid 100), mapped to the invoking user, so no privileges are
+needed. On macOS it runs under `sandbox-exec` with a profile generated like
+Nix's, honouring `__impureHostDeps` (within `allowed-impure-host-deps`),
+`__sandboxProfile` and `__darwinAllowLocalNetworking`. Fixed-output
+derivations keep network access. In relaxed mode `__noChroot` and
+fixed-output derivations build unconfined. Where the kernel does not allow
+user namespaces, `sandbox-fallback` (default `true`) builds unsandboxed with
+a warning.
 
 **Substitution.** Before building, `realise` asks the configured binary
 caches (default `https://cache.nixos.org`) for the missing outputs of each
@@ -130,8 +149,15 @@ Commands: `eval` (`--json`, `--raw`, `--lazy`), `instantiate`, `build`
 --closure-size`, also against a cache with `--store URL`), `copy --to URL` and
 `copy --from URL` for `file://` and `http(s)://` caches (uploads with `PUT`), and
 `key generate-secret|convert-secret-to-public`. Global options: `--store`,
-`-I`, `--arg`, `--argstr`, `--system`, `--pure`, `--option`. `NIX_PATH`
+`-I`, `--arg`, `--argstr`, `--system`, `--pure`, `--option NAME VALUE` (also read from `NIX_CONFIG`),
+`--sandbox`/`--no-sandbox`, `--timeout`, `--max-silent-time`. `NIX_PATH`
 entries that are absolute paths are honoured.
+
+macOS has no shell in the sandbox unless one is listed:
+
+```bash
+target/release/oxnix --store ~/oxstore build tests/build.nix --option sandbox true --option sandbox-paths "/bin/sh /bin/bash /bin/cat /bin/mkdir"
+```
 
 ## Scope
 
@@ -145,7 +171,7 @@ operations listed above, and binary caches: narinfo reading and writing,
 signatures, substitution and `copy`.
 
 Not implemented: the daemon and its wire protocol, S3 and SSH stores,
-sandboxing, remote builders,
+remote builders,
 flakes, `fetchGit`/`fetchTarball`/`fetchTree`, content-addressed
 (floating) and impure derivations, `fromTOML`, `toXML`, `unsafeGetAttrPos`
 (returns `null`), and profiles/`nix-env`.
@@ -166,6 +192,12 @@ flakes, `fetchGit`/`fetchTarball`/`fetchTree`, content-addressed
   `cache-server` example of `oxnix-store`) and reads it back with
   `nix path-info`, `nix store verify` and `nix copy`. The same server backs
   the `http_cache` integration test run by `cargo test`.
+* `cargo test` also builds it sandboxed, and builds the derivations of
+  `tests/sandbox.nix` to show that a sandboxed builder can neither read a
+  host file outside its closure nor reach the host's network, that a
+  fixed-output derivation can, that `__noChroot` needs relaxed mode, and
+  that `timeout` and `max-silent-time` kill a build with its background
+  processes. On Linux these need unprivileged user namespaces.
 
 ## Profiling
 
