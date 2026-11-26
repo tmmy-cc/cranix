@@ -1,3 +1,8 @@
+# Copied from Nix 2.24.10, src/libexpr/call-flake.nix.
+# Copyright (c) 2003-2024 Eelco Dolstra and the Nix contributors.
+# Nix is licensed under the GNU Lesser General Public License, version 2.1
+# (LGPL-2.1); see https://github.com/NixOS/nix/blob/2.24.10/COPYING.
+
 # This is a helper to callFlake() to lazily fetch flake inputs.
 
 # The contents of the lock file, in JSON format.
