@@ -4,7 +4,8 @@
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
-use oxnix_core::{Derivation, Hash, HashAlgo, Output, StorePath};
+use oxnix_core::derivation::downstream_placeholder;
+use oxnix_core::{Derivation, DrvHash, Hash, HashAlgo, Output, StorePath};
 
 use crate::eval::{err, CoerceOpts, Eval, R};
 use crate::value::*;
@@ -21,7 +22,7 @@ impl Eval {
     }
 
     /// `hashDerivationModulo(drv, maskOutputs = false)` of a `.drv` file.
-    pub fn drv_hash(&self, p: &StorePath) -> R<Hash> {
+    pub fn drv_hash(&self, p: &StorePath) -> R<DrvHash> {
         if let Some(h) = self.drv_hashes.borrow().get(p) {
             return Ok(h.clone());
         }
@@ -92,6 +93,8 @@ fn derivation_inner(ev: &Eval, attrs: &Attrs, name: &str) -> R<Value> {
     let mut output_hash: Option<String> = None;
     let mut output_hash_algo: Option<String> = None;
     let mut hash_mode: Option<String> = None;
+    let mut content_addressed = false;
+    let mut impure = false;
     let coerce = CoerceOpts { more: true, copy: true };
 
     for (k, v) in attrs.iter() {
@@ -107,11 +110,17 @@ fn derivation_inner(ev: &Eval, attrs: &Attrs, name: &str) -> R<Value> {
         if ignore_nulls && matches!(ev.force(v).map_err(ctxmsg)?, Value::Null) {
             continue;
         }
-        if key == "__contentAddressed" && ev.force_bool(v)? {
-            return err("content-addressed derivations are not supported");
+        // Enabled `__contentAddressed` and `__impure` are not passed to the
+        // builder.
+        if key == "__contentAddressed" && ev.force_bool(v).map_err(ctxmsg)? {
+            ev.opts.require_feature("ca-derivations").map_err(ctxmsg)?;
+            content_addressed = true;
+            continue;
         }
-        if key == "__impure" && ev.force_bool(v)? {
-            return err("impure derivations are not supported");
+        if key == "__impure" && ev.force_bool(v).map_err(ctxmsg)? {
+            ev.opts.require_feature("impure-derivations").map_err(ctxmsg)?;
+            impure = true;
+            continue;
         }
         if key == "args" {
             for a in ev.force_list(v).map_err(ctxmsg)?.iter() {
@@ -217,6 +226,31 @@ fn derivation_inner(ev: &Eval, attrs: &Attrs, name: &str) -> R<Value> {
             "out".into(),
             Output { path: None, hash_algo: format!("{prefix}{}", hash.algo), hash: hash.to_base16() },
         );
+    } else if content_addressed || impure {
+        if content_addressed && impure {
+            return err("derivation cannot be both content-addressed and impure");
+        }
+        let algo = match output_hash_algo.as_deref() {
+            Some("") | None => HashAlgo::Sha256,
+            Some(a) => HashAlgo::parse(a).ok_or(()).or_else(|_| err(format!("unknown hash algorithm '{a}'")))?,
+        };
+        let prefix = match hash_mode.as_deref() {
+            None | Some("recursive") | Some("nar") => "r:",
+            Some("flat") => "",
+            Some("text") => {
+                ev.opts.require_feature("dynamic-derivations")?;
+                return err("text-hashed derivation outputs are not supported");
+            }
+            Some("git") => {
+                ev.opts.require_feature("git-hashing")?;
+                return err("git-hashed derivation outputs are not supported");
+            }
+            Some(m) => return err(format!("invalid value '{m}' for 'outputHashMode'")),
+        };
+        let hash = if impure { "impure" } else { "" };
+        for o in &outputs {
+            drv.outputs.insert(o.clone(), Output { path: None, hash_algo: format!("{prefix}{algo}"), hash: hash.into() });
+        }
     } else {
         for o in &outputs {
             drv.outputs.insert(o.clone(), Output::default());
@@ -242,7 +276,12 @@ fn derivation_inner(ev: &Eval, attrs: &Attrs, name: &str) -> R<Value> {
 
     let mut out = vec![(ev.syms.drv_path.clone(), Value::str_ctx(drv_s.clone(), [CtxElem::DrvDeep(drv_s.clone())].into()))];
     for (o, info) in &drv.outputs {
-        let p = sd.print(info.path.as_ref().unwrap());
+        // Outputs whose paths are only known after building are referred
+        // to by a placeholder that the builder of a dependent rewrites.
+        let p = match &info.path {
+            Some(p) => sd.print(p),
+            None => downstream_placeholder(&drv_path, o),
+        };
         out.push((Sym::new(o), Value::str_ctx(p, [CtxElem::Built { drv: drv_s.clone(), output: o.clone() }].into())));
     }
     let drv = Rc::new(drv);

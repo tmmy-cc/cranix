@@ -66,6 +66,9 @@ global options:
   --sandbox, --no-sandbox, --timeout N, --max-silent-time N
                     shorthands for the build settings sandbox (true|false|relaxed),
                     timeout and max-silent-time; sandbox-paths via --option
+  --experimental-features FEATURES, --extra-experimental-features FEATURES
+                    set or extend the enabled experimental features (also read
+                    from nix.conf and $NIX_CONFIG), e.g. ca-derivations
 ";
 
 struct Cli {
@@ -80,6 +83,7 @@ struct Cli {
     settings: Settings,
     /// Build settings from `NIX_CONFIG` and `--option`, in order of precedence.
     options: Vec<(String, String)>,
+    features: BTreeSet<String>,
     rest: Vec<String>,
 }
 
@@ -107,12 +111,16 @@ fn parse_cli() -> Result<Cli, String> {
         pure: false,
         show_trace: false,
         settings: Settings::load()?,
+        features: configured_features(),
         options: Vec::new(),
         rest: Vec::new(),
     };
     if let Ok(conf) = std::env::var("NIX_CONFIG") {
         for (k, v) in parse_conf(&conf) {
-            if Settings::is_known(&k) {
+            // configured_features has read the experimental features.
+            if k.ends_with("experimental-features") {
+                continue;
+            } else if Settings::is_known(&k) {
                 cli.settings.set(&k, &v)?;
             } else {
                 cli.options.push((k, v));
@@ -151,7 +159,11 @@ fn parse_cli() -> Result<Cli, String> {
             "--option" => {
                 let n = val("--option")?;
                 let v = val("--option")?;
-                if Settings::is_known(&n) {
+                if n == "experimental-features" {
+                    cli.features = v.split_whitespace().map(String::from).collect();
+                } else if n == "extra-experimental-features" {
+                    cli.features.extend(v.split_whitespace().map(String::from));
+                } else if Settings::is_known(&n) {
                     cli.settings.set(&n, &v)?;
                 } else {
                     cli.options.push((n, v));
@@ -173,6 +185,8 @@ fn parse_cli() -> Result<Cli, String> {
                 let v = val("--max-silent-time")?;
                 cli.options.push(("max-silent-time".into(), v));
             }
+            "--experimental-features" => cli.features = val(&a)?.split_whitespace().map(String::from).collect(),
+            "--extra-experimental-features" => cli.features.extend(val(&a)?.split_whitespace().map(String::from)),
             "-h" | "--help" => {
                 print!("{USAGE}");
                 std::process::exit(0);
@@ -184,6 +198,29 @@ fn parse_cli() -> Result<Cli, String> {
         cli.search.extend(np.split(':').filter(|s| !s.is_empty()).filter_map(parse_search));
     }
     Ok(cli)
+}
+
+/// Experimental features enabled by the Nix configuration files and
+/// `$NIX_CONFIG`, applied in that order.
+fn configured_features() -> BTreeSet<String> {
+    let mut texts = vec![std::fs::read_to_string("/etc/nix/nix.conf").unwrap_or_default()];
+    let user_conf = match std::env::var("XDG_CONFIG_HOME") {
+        Ok(d) => PathBuf::from(d).join("nix/nix.conf"),
+        Err(_) => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/nix/nix.conf"),
+    };
+    texts.push(std::fs::read_to_string(user_conf).unwrap_or_default());
+    texts.push(std::env::var("NIX_CONFIG").unwrap_or_default());
+    let mut features = BTreeSet::new();
+    for line in texts.iter().flat_map(|t| t.lines()) {
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let v = v.split('#').next().unwrap_or("").split_whitespace().map(String::from);
+        match k.trim() {
+            "experimental-features" => features = v.collect(),
+            "extra-experimental-features" => features.extend(v),
+            _ => {}
+        }
+    }
+    features
 }
 
 /// Parses `nix.conf` syntax: `name = value` lines, `#` comments.
@@ -304,7 +341,14 @@ fn parse_target(args: &[String], value_flags: &[&str]) -> Result<Target, String>
 
 fn new_eval(cli: &Cli) -> Result<Rc<Eval>, String> {
     let store = open_store(cli)?;
-    Ok(Eval::new(store, Options { search_path: cli.search.clone(), system: cli.system.clone(), pure: cli.pure, trace_verbose: false }))
+    let opts = Options {
+        search_path: cli.search.clone(),
+        system: cli.system.clone(),
+        pure: cli.pure,
+        trace_verbose: false,
+        experimental_features: cli.features.clone(),
+    };
+    Ok(Eval::new(store, opts))
 }
 
 /// Renders an evaluation error for stderr, in colour when stderr is a

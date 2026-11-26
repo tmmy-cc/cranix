@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use oxnix_core::hash::{Hash, HashAlgo, HashSink};
-use oxnix_core::{nar, Derivation, FileIngestion, StoreDir, StorePath};
+use oxnix_core::{nar, Derivation, DrvHash, FileIngestion, StoreDir, StorePath};
 use oxnix_store::build::BuildOptions;
 use oxnix_store::gc_roots::GcAction;
 use oxnix_store::{PathInfo, Store};
@@ -864,7 +864,7 @@ impl Conn<'_> {
                         for (n, p) in wanted {
                             res.built_outputs.insert(
                                 n.clone(),
-                                Realisation { id: format!("sha256:{}!{n}", h.to_base16()), out_path: p.clone() },
+                                Realisation { id: format!("sha256:{}!{n}", h.hash.to_base16()), out_path: p.clone() },
                             );
                         }
                         res
@@ -1063,7 +1063,7 @@ pub fn build_basic_result(s: &Store, drv_path: &StorePath, drv: &Derivation, opt
         // needs no lookups.
         let h = drv.hash_modulo(&s.dir, true, &mut |p| Err(format!("unexpected input derivation '{p}'")));
         let id = |n: &str| match &h {
-            Ok(h) => format!("sha256:{}!{n}", h.to_base16()),
+            Ok(h) => format!("sha256:{}!{n}", h.hash.to_base16()),
             Err(_) => format!("!{n}"),
         };
         for (n, o) in &drv.outputs {
@@ -1080,7 +1080,7 @@ fn now() -> u64 {
 }
 
 /// `hashDerivationModulo` of a derivation in the store, memoised.
-pub fn drv_hash(s: &Store, drv: &StorePath, memo: &mut HashMap<StorePath, Hash>) -> Result<Hash> {
+pub fn drv_hash(s: &Store, drv: &StorePath, memo: &mut HashMap<StorePath, DrvHash>) -> Result<DrvHash> {
     if let Some(h) = memo.get(drv) {
         return Ok(h.clone());
     }

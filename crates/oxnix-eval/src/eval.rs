@@ -3,10 +3,10 @@
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
-use oxnix_core::{Derivation, FileIngestion, Hash, StorePath};
+use oxnix_core::{Derivation, DrvHash, FileIngestion, StorePath};
 use oxnix_store::Store;
 
 use crate::ast::{BinOp, Pos};
@@ -36,6 +36,19 @@ pub struct Options {
     pub system: String,
     pub pure: bool,
     pub trace_verbose: bool,
+    /// Enabled experimental features, e.g. `ca-derivations`.
+    pub experimental_features: BTreeSet<String>,
+}
+
+impl Options {
+    /// Fails like Nix when experimental feature `name` is disabled.
+    pub fn require_feature(&self, name: &str) -> R<()> {
+        if self.experimental_features.contains(name) {
+            Ok(())
+        } else {
+            err(format!("experimental Nix feature '{name}' is disabled; add '--extra-experimental-features {name}' to enable it"))
+        }
+    }
 }
 
 pub struct Eval {
@@ -50,7 +63,7 @@ pub struct Eval {
     /// Derivations instantiated (or read) during this evaluation.
     pub drvs: RefCell<HashMap<StorePath, Rc<Derivation>>>,
     /// `hashDerivationModulo` results, keyed by `.drv` path.
-    pub drv_hashes: RefCell<HashMap<StorePath, Hash>>,
+    pub drv_hashes: RefCell<HashMap<StorePath, DrvHash>>,
     pub regex_cache: RefCell<HashMap<String, Rc<regex::Regex>>>,
     depth: Cell<usize>,
 }

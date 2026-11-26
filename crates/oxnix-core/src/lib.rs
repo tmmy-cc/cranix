@@ -8,7 +8,7 @@ pub mod narinfo;
 pub mod signing;
 pub mod store_path;
 
-pub use derivation::{Derivation, Output};
+pub use derivation::{Derivation, DrvHash, Output, OutputKind};
 pub use hash::{Hash, HashAlgo};
 pub use narinfo::NarInfo;
 pub use store_path::{FileIngestion, StoreDir, StorePath};
