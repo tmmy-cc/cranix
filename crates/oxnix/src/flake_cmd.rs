@@ -797,7 +797,17 @@ fn develop(ev: &Eval, cli: &Cli, flags: &FlakeFlags, spec: &str, command: Option
             let script = format!("source {}\n{}", shell_quote(&rcfile.to_string_lossy()), c.iter().map(|x| shell_quote(x)).collect::<Vec<_>>().join(" "));
             exec(&bash, &["-c".into(), script], &env)
         }
-        _ => exec(&bash, &["--rcfile".into(), rcfile.to_string_lossy().into_owned()], &env),
+        _ => {
+            use std::io::IsTerminal;
+            if std::io::stdin().is_terminal() {
+                exec(&bash, &["--rcfile".into(), rcfile.to_string_lossy().into_owned()], &env)
+            } else {
+                // Commands piped in run in a non-interactive bash, which
+                // reads `$BASH_ENV` instead of an rc file.
+                env.insert("BASH_ENV".into(), rcfile.to_string_lossy().into_owned());
+                exec(&bash, &[], &env)
+            }
+        }
     }
 }
 
