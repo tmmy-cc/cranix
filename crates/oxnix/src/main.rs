@@ -10,7 +10,10 @@ use oxnix_core::hash::{Encoding, Hash, HashAlgo, HashSink};
 use oxnix_core::{nar, FileIngestion, StorePath};
 use oxnix_eval::value::{Attrs, Sym};
 use oxnix_eval::{print, Eval, Options, RenderOptions, Value};
+use oxnix_store::binary_cache::{read_secret_keys, BinaryCache};
 use oxnix_store::build::{default_root, host_system, BuildOptions};
+use oxnix_store::config::Settings;
+use oxnix_store::substitute::{trusted_keys, Substituters};
 use oxnix_store::Store;
 
 #[cfg(not(feature = "dhat-heap"))]
@@ -32,7 +35,11 @@ commands:
   hash path|file PATH [--type ALGO] [--base16|--base32|--sri]
   hash convert HASH [--to base16|nix32|base64|sri]
   nar dump PATH > out.nar | nar restore DEST < in.nar
-  store add PATH | path-info PATH... | closure PATH... | verify | gc [--dry-run] | ls
+  store add PATH | closure PATH... | verify | gc [--dry-run] | ls
+  store path-info [--json] [-r] [-S | --closure-size] PATH...
+  store sign -k KEYFILE [-r] PATH...            add signatures to local paths
+  copy --to URL PATH... | copy --from URL PATH...   copy closures to or from a binary cache
+  key generate-secret --key-name NAME | key convert-secret-to-public < KEY
 
 global options:
   --store DIR       use a store rooted at DIR whose store directory is DIR/store
@@ -42,6 +49,11 @@ global options:
   --system SYSTEM   value of builtins.currentSystem
   --pure            restrict impure builtins
   --show-trace      show the full trace of evaluation errors
+  --option NAME VALUE   set a configuration setting (also --NAME VALUE, --[no-]NAME)
+                    settings: substituters, trusted-public-keys, require-sigs,
+                    substitute, secret-key-files, max-substitution-jobs
+                    (and extra-*), read from ~/.config/oxnix/oxnix.conf and $OXNIX_CONFIG
+  --store URL       for 'store path-info', read a binary cache (file:// or https://)
 ";
 
 struct Cli {
@@ -51,6 +63,7 @@ struct Cli {
     system: String,
     pure: bool,
     show_trace: bool,
+    settings: Settings,
     rest: Vec<String>,
 }
 
@@ -68,7 +81,16 @@ fn parse_search(s: &str) -> Option<(String, String)> {
 }
 
 fn parse_cli() -> Result<Cli, String> {
-    let mut cli = Cli { store: None, search: Vec::new(), args: Vec::new(), system: host_system(), pure: false, show_trace: false, rest: Vec::new() };
+    let mut cli = Cli {
+        store: None,
+        search: Vec::new(),
+        args: Vec::new(),
+        system: host_system(),
+        pure: false,
+        show_trace: false,
+        settings: Settings::load()?,
+        rest: Vec::new(),
+    };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().ok_or_else(|| format!("{name} requires an argument"));
@@ -91,6 +113,17 @@ fn parse_cli() -> Result<Cli, String> {
             "--system" => cli.system = val("--system")?,
             "--pure" => cli.pure = true,
             "--show-trace" => cli.show_trace = true,
+            "--option" => {
+                let n = val("--option")?;
+                let v = val("--option")?;
+                cli.settings.set(&n, &v)?;
+            }
+            f if f.strip_prefix("--").is_some_and(|n| Settings::is_known(n) && !Settings::is_bool(n)) => {
+                let v = val(f)?;
+                cli.settings.set(&f[2..], &v)?;
+            }
+            f if f.strip_prefix("--").is_some_and(Settings::is_bool) => cli.settings.set(&f[2..], "true")?,
+            f if f.strip_prefix("--no-").is_some_and(Settings::is_bool) => cli.settings.set(&f[5..], "false")?,
             "-h" | "--help" => {
                 print!("{USAGE}");
                 std::process::exit(0);
@@ -104,11 +137,26 @@ fn parse_cli() -> Result<Cli, String> {
     Ok(cli)
 }
 
-fn open_store(cli: &Cli) -> Result<Store, String> {
+fn store_url(cli: &Cli) -> Option<String> {
+    let s = cli.store.as_ref()?.to_string_lossy().into_owned();
+    s.contains("://").then_some(s)
+}
+
+/// Opens the local store without substituters.
+fn open_local_store(cli: &Cli) -> Result<Store, String> {
+    if let Some(u) = store_url(cli) {
+        return Err(format!("binary cache '{u}' can only be used with 'store path-info'"));
+    }
     match &cli.store {
         Some(d) => Store::open_at(d),
         None => Store::open_chroot(&default_root()),
     }
+}
+
+fn open_store(cli: &Cli) -> Result<Store, String> {
+    let mut store = open_local_store(cli)?;
+    store.set_substituters(Substituters::from_settings(&cli.settings)?);
+    Ok(store)
 }
 
 fn main() -> ExitCode {
@@ -140,6 +188,8 @@ fn run() -> Result<(), String> {
         "hash" => cmd_hash(&args),
         "nar" => cmd_nar(&args),
         "store" => cmd_store(&cli, &args),
+        "copy" => cmd_copy(&cli, &args),
+        "key" => cmd_key(&args),
         c => Err(format!("unknown command '{c}'\n{USAGE}")),
     }
 }
@@ -484,13 +534,13 @@ fn cmd_nar(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_store(cli: &Cli, args: &[String]) -> Result<(), String> {
-    let store = open_store(cli)?;
-    let parse = |s: &String| -> Result<StorePath, String> {
-        match store.dir.to_store_path(s) {
-            Some((p, _)) => Ok(p),
-            None => StorePath::from_base_name(s),
+    if args.first().map(String::as_str) == Some("path-info") {
+        if let Some(u) = store_url(cli) {
+            return cmd_cache_path_info(cli, &u, &args[1..]);
         }
-    };
+    }
+    let store = open_store(cli)?;
+    let parse = |s: &String| parse_store_path(&store.dir, s);
     let mut out = std::io::stdout().lock();
     match args.first().map(String::as_str) {
         Some("add") => {
@@ -501,23 +551,28 @@ fn cmd_store(cli: &Cli, args: &[String]) -> Result<(), String> {
                 writeln!(out, "{}", store.dir.print(&sp)).ok();
             }
         }
-        Some("path-info") => {
-            for p in &args[1..] {
-                let sp = parse(p)?;
-                let info = store.query_info(&sp)?.ok_or_else(|| format!("path '{p}' is not valid"))?;
-                writeln!(out, "{}", store.dir.print(&sp)).ok();
-                writeln!(out, "  NarHash: {}", info.nar_hash.to_sri()).ok();
-                writeln!(out, "  NarSize: {}", info.nar_size).ok();
-                for r in &info.references {
-                    writeln!(out, "  Reference: {}", store.dir.print(r)).ok();
-                }
-                if let Some(d) = &info.deriver {
-                    writeln!(out, "  Deriver: {}", store.dir.print(d)).ok();
-                }
-                if let Some(ca) = &info.ca {
-                    writeln!(out, "  CA: {ca}").ok();
+        Some("path-info") => return cmd_path_info(cli, &store, &args[1..]),
+        Some("sign") => {
+            let mut keys = Vec::new();
+            let mut recursive = false;
+            let mut paths = Vec::new();
+            let mut it = args[1..].iter();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "-k" | "--key-file" => keys.push(it.next().ok_or("--key-file requires an argument")?.clone()),
+                    "-r" | "--recursive" => recursive = true,
+                    _ => paths.push(parse(a)?),
                 }
             }
+            if keys.is_empty() {
+                return Err("store sign: pass the secret key file with --key-file".into());
+            }
+            let keys = read_secret_keys(keys.iter().map(String::as_str))?;
+            let paths = if recursive { store.closure(paths)?.into_iter().collect() } else { paths };
+            for p in &paths {
+                store.sign_path(p, &keys)?;
+            }
+            eprintln!("added {} signatures", paths.len() * keys.len());
         }
         Some("closure") => {
             let roots: Vec<StorePath> = args[1..].iter().map(parse).collect::<Result<_, _>>()?;
@@ -555,7 +610,315 @@ fn cmd_store(cli: &Cli, args: &[String]) -> Result<(), String> {
                 freed as f64 / (1024.0 * 1024.0)
             );
         }
-        _ => return Err("usage: oxnix store add|path-info|closure|ls|verify|gc".into()),
+        _ => return Err("usage: oxnix store add|path-info|sign|closure|ls|verify|gc".into()),
     }
     Ok(())
+}
+
+/// Parses a store path given in full, as a base name, or as a symlink into
+/// the store such as `result`.
+fn parse_store_path(dir: &oxnix_core::StoreDir, s: &str) -> Result<StorePath, String> {
+    let target = match std::fs::read_link(s) {
+        Ok(t) if !dir.is_in_store(s) => t.to_string_lossy().into_owned(),
+        _ => s.to_string(),
+    };
+    match dir.to_store_path(&target) {
+        Some((p, _)) => Ok(p),
+        None => StorePath::from_base_name(&target),
+    }
+}
+
+struct PathInfoArgs {
+    json: bool,
+    recursive: bool,
+    closure_size: bool,
+    paths: Vec<String>,
+}
+
+fn parse_path_info_args(args: &[String]) -> Result<PathInfoArgs, String> {
+    let mut a = PathInfoArgs { json: false, recursive: false, closure_size: false, paths: Vec::new() };
+    for x in args {
+        match x.as_str() {
+            "--json" => a.json = true,
+            "-r" | "--recursive" => a.recursive = true,
+            "-S" | "--closure-size" => a.closure_size = true,
+            f if f.starts_with('-') => return Err(format!("path-info: unknown flag '{f}'")),
+            p => a.paths.push(p.to_string()),
+        }
+    }
+    Ok(a)
+}
+
+/// The fields `nix path-info --json` prints for every store.
+fn path_info_json(
+    dir: &oxnix_core::StoreDir,
+    info: &oxnix_store::PathInfo,
+    sigs: &[String],
+) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::Value as J;
+    let mut m = serde_json::Map::new();
+    m.insert("ca".into(), info.ca.clone().map_or(J::Null, J::String));
+    m.insert("deriver".into(), info.deriver.as_ref().map_or(J::Null, |d| J::String(dir.print(d))));
+    m.insert("narHash".into(), J::String(info.nar_hash.to_sri()));
+    m.insert("narSize".into(), J::from(info.nar_size));
+    m.insert("references".into(), J::Array(info.references.iter().map(|r| J::String(dir.print(r))).collect()));
+    m.insert("signatures".into(), J::Array(sigs.iter().cloned().map(J::String).collect()));
+    m
+}
+
+fn print_path_info_text(
+    out: &mut impl Write,
+    dir: &oxnix_core::StoreDir,
+    info: &oxnix_store::PathInfo,
+    sigs: &[String],
+    closure_size: Option<u64>,
+) {
+    writeln!(out, "{}", dir.print(&info.path)).ok();
+    writeln!(out, "  NarHash: {}", info.nar_hash.to_sri()).ok();
+    writeln!(out, "  NarSize: {}", info.nar_size).ok();
+    if let Some(n) = closure_size {
+        writeln!(out, "  ClosureSize: {n}").ok();
+    }
+    for r in &info.references {
+        writeln!(out, "  Reference: {}", dir.print(r)).ok();
+    }
+    if let Some(d) = &info.deriver {
+        writeln!(out, "  Deriver: {}", dir.print(d)).ok();
+    }
+    if let Some(ca) = &info.ca {
+        writeln!(out, "  CA: {ca}").ok();
+    }
+    for s in sigs {
+        writeln!(out, "  Signature: {s}").ok();
+    }
+}
+
+fn cmd_path_info(_cli: &Cli, store: &Store, args: &[String]) -> Result<(), String> {
+    let a = parse_path_info_args(args)?;
+    let mut roots = Vec::new();
+    for p in &a.paths {
+        let sp = parse_store_path(&store.dir, p)?;
+        if !store.is_valid(&sp) {
+            return Err(format!("path '{}' is not valid", store.dir.print(&sp)));
+        }
+        roots.push(sp);
+    }
+    let paths: Vec<StorePath> = if a.recursive { store.closure(roots)?.into_iter().collect() } else { roots };
+    let mut json = serde_json::Map::new();
+    let mut out = std::io::stdout().lock();
+    for p in &paths {
+        let info = store.query_info(p)?.ok_or_else(|| format!("path '{}' is not valid", store.dir.print(p)))?;
+        let sigs = store.query_sigs(p)?;
+        let closure_size = if a.closure_size {
+            let mut n = 0;
+            for q in store.closure([p.clone()])? {
+                n += store.query_info(&q)?.map_or(0, |i| i.nar_size);
+            }
+            Some(n)
+        } else {
+            None
+        };
+        if a.json {
+            let mut m = path_info_json(&store.dir, &info, &sigs);
+            if let Some(n) = closure_size {
+                m.insert("closureSize".into(), n.into());
+            }
+            m.insert("registrationTime".into(), store.registration_time(p).map_or(serde_json::Value::Null, Into::into));
+            m.insert("ultimate".into(), store.is_ultimate(p)?.into());
+            json.insert(store.dir.print(p), m.into());
+        } else {
+            print_path_info_text(&mut out, &store.dir, &info, &sigs, closure_size);
+        }
+    }
+    if a.json {
+        writeln!(out, "{}", serde_json::Value::Object(json)).ok();
+    }
+    Ok(())
+}
+
+type NarInfos = std::collections::BTreeMap<StorePath, oxnix_core::NarInfo>;
+
+fn cache_info(cache: &BinaryCache, dir: &oxnix_core::StoreDir, p: &StorePath, infos: &mut NarInfos) -> Result<(), String> {
+    if !infos.contains_key(p) {
+        let ni = cache
+            .query_narinfo(dir, p.hash_part())?
+            .filter(|ni| ni.path == *p)
+            .ok_or_else(|| format!("path '{}' is not valid", dir.print(p)))?;
+        infos.insert(p.clone(), ni);
+    }
+    Ok(())
+}
+
+fn cache_closure(cache: &BinaryCache, dir: &oxnix_core::StoreDir, root: &StorePath, infos: &mut NarInfos) -> Result<BTreeSet<StorePath>, String> {
+    let mut seen = BTreeSet::new();
+    let mut todo = vec![root.clone()];
+    while let Some(p) = todo.pop() {
+        if seen.insert(p.clone()) {
+            cache_info(cache, dir, &p, infos)?;
+            todo.extend(infos[&p].references.iter().filter(|r| !seen.contains(*r)).cloned());
+        }
+    }
+    Ok(seen)
+}
+
+/// `store path-info --store URL`: reads narinfos from a binary cache.
+fn cmd_cache_path_info(_cli: &Cli, url: &str, args: &[String]) -> Result<(), String> {
+    let a = parse_path_info_args(args)?;
+    let cache = BinaryCache::open(url)?;
+    let dir = oxnix_core::StoreDir::new(cache.info()?.store_dir);
+    let mut infos = NarInfos::new();
+    let mut roots = Vec::new();
+    for p in &a.paths {
+        let sp = match dir.to_store_path(p) {
+            Some((sp, _)) => sp,
+            None => StorePath::from_base_name(p)?,
+        };
+        cache_info(&cache, &dir, &sp, &mut infos)?;
+        roots.push(sp);
+    }
+    let paths: Vec<StorePath> = if a.recursive {
+        let mut all = BTreeSet::new();
+        for r in &roots {
+            all.extend(cache_closure(&cache, &dir, r, &mut infos)?);
+        }
+        all.into_iter().collect()
+    } else {
+        roots
+    };
+    let mut json = serde_json::Map::new();
+    let mut out = std::io::stdout().lock();
+    for p in &paths {
+        let sizes = if a.closure_size {
+            let c = cache_closure(&cache, &dir, p, &mut infos)?;
+            Some((c.iter().map(|q| infos[q].nar_size).sum::<u64>(), c.iter().map(|q| infos[q].file_size.unwrap_or(0)).sum::<u64>()))
+        } else {
+            None
+        };
+        let ni = &infos[p];
+        let info = oxnix_store::PathInfo {
+            path: ni.path.clone(),
+            nar_hash: ni.nar_hash.clone(),
+            nar_size: ni.nar_size,
+            references: ni.references.clone(),
+            deriver: ni.deriver.clone(),
+            ca: ni.ca.clone(),
+        };
+        if a.json {
+            use serde_json::Value as J;
+            let mut m = path_info_json(&dir, &info, &ni.sigs);
+            if let Some((n, d)) = sizes {
+                m.insert("closureSize".into(), n.into());
+                m.insert("closureDownloadSize".into(), d.into());
+            }
+            m.insert("compression".into(), J::String(ni.compression.clone()));
+            m.insert("downloadHash".into(), ni.file_hash.as_ref().map_or(J::Null, |h| J::String(h.to_sri())));
+            m.insert("downloadSize".into(), ni.file_size.map_or(J::Null, Into::into));
+            m.insert("registrationTime".into(), J::Null);
+            m.insert("ultimate".into(), false.into());
+            m.insert("url".into(), J::String(ni.url.clone()));
+            json.insert(dir.print(p), m.into());
+        } else {
+            print_path_info_text(&mut out, &dir, &info, &ni.sigs, sizes.map(|s| s.0));
+        }
+    }
+    if a.json {
+        writeln!(out, "{}", serde_json::Value::Object(json)).ok();
+    }
+    Ok(())
+}
+
+/// `copy --to URL` uploads closures from the local store; `copy --from
+/// URL` substitutes closures from a cache into it.
+fn cmd_copy(cli: &Cli, args: &[String]) -> Result<(), String> {
+    let mut to = None;
+    let mut from = None;
+    let mut check_sigs = cli.settings.require_sigs;
+    let mut paths = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--to" => to = Some(it.next().ok_or("--to requires an argument")?.clone()),
+            "--from" => from = Some(it.next().ok_or("--from requires an argument")?.clone()),
+            "--no-check-sigs" => check_sigs = false,
+            f if f.starts_with('-') => return Err(format!("copy: unknown flag '{f}'")),
+            p => paths.push(p.to_string()),
+        }
+    }
+    let mut store = open_local_store(cli)?;
+    let roots: Vec<StorePath> = paths.iter().map(|p| parse_store_path(&store.dir, p)).collect::<Result<_, _>>()?;
+    match (to, from) {
+        (Some(to), None) => {
+            let cache = BinaryCache::open(&to)?;
+            cache.init_for_writing(&store.dir)?;
+            let mut key_files: Vec<&str> = cli.settings.secret_key_files.iter().map(String::as_str).collect();
+            key_files.extend(cache.param("secret-key"));
+            let keys = read_secret_keys(key_files)?;
+            for r in &roots {
+                if !store.is_valid(r) {
+                    return Err(format!("path '{}' is not valid", store.dir.print(r)));
+                }
+            }
+            // References are uploaded before the paths that refer to them.
+            let mut order = Vec::new();
+            let mut seen = BTreeSet::new();
+            fn visit(store: &Store, p: &StorePath, seen: &mut BTreeSet<StorePath>, order: &mut Vec<StorePath>) -> Result<(), String> {
+                if !seen.insert(p.clone()) {
+                    return Ok(());
+                }
+                let info = store.query_info(p)?.ok_or_else(|| format!("path '{}' is not valid", store.dir.print(p)))?;
+                for r in info.references.iter().filter(|r| *r != p) {
+                    visit(store, r, seen, order)?;
+                }
+                order.push(p.clone());
+                Ok(())
+            }
+            for r in &roots {
+                visit(&store, r, &mut seen, &mut order)?;
+            }
+            let mut copied = 0;
+            for p in &order {
+                if cache.file_exists(&format!("{}.narinfo", p.hash_part()))? {
+                    continue;
+                }
+                eprintln!("copying path '{}' to '{}'...", store.dir.print(p), cache.url);
+                let info = store.query_info(p)?.ok_or_else(|| format!("path '{}' is not valid", store.dir.print(p)))?;
+                cache.add_path(&store.dir, &store.real_path(p), &info, &store.query_sigs(p)?, &keys)?;
+                copied += 1;
+            }
+            eprintln!("copied {copied} paths");
+            Ok(())
+        }
+        (None, Some(from)) => {
+            let cache = BinaryCache::open(&from)?;
+            let keys = trusted_keys(&cli.settings.trusted_public_keys);
+            store.set_substituters(Substituters::new(vec![cache], keys, check_sigs, cli.settings.max_substitution_jobs));
+            let failed = store.substitute_paths(&roots)?;
+            if let Some(p) = failed.first() {
+                return Err(format!("path '{}' is not available from '{from}'", store.dir.print(p)));
+            }
+            Ok(())
+        }
+        _ => Err("usage: oxnix copy --to URL PATH... | copy --from URL PATH...".into()),
+    }
+}
+
+fn cmd_key(args: &[String]) -> Result<(), String> {
+    use oxnix_core::signing::SecretKey;
+    match args.first().map(String::as_str) {
+        Some("generate-secret") => {
+            let name = match &args[1..] {
+                [f, n] if f == "--key-name" => n,
+                _ => return Err("usage: oxnix key generate-secret --key-name NAME".into()),
+            };
+            println!("{}", SecretKey::generate(name)?);
+            Ok(())
+        }
+        Some("convert-secret-to-public") => {
+            let mut s = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).map_err(|e| format!("reading the secret key: {e}"))?;
+            println!("{}", SecretKey::parse(&s)?.to_public());
+            Ok(())
+        }
+        _ => Err("usage: oxnix key generate-secret --key-name NAME | key convert-secret-to-public < KEY".into()),
+    }
 }
