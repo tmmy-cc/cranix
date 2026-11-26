@@ -25,7 +25,7 @@ impl Store {
     }
 
     /// The output paths of `drv`: static ones, or those of its realisations.
-    pub(crate) fn output_paths(&self, drv_path: &StorePath, drv: &Derivation) -> Result<BTreeMap<String, StorePath>> {
+    pub fn output_paths(&self, drv_path: &StorePath, drv: &Derivation) -> Result<BTreeMap<String, StorePath>> {
         let mut out = BTreeMap::new();
         for (name, o) in &drv.outputs {
             let p = match &o.path {

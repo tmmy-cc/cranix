@@ -341,7 +341,10 @@ impl Settings {
             }
             _ if extra => return self.build.set(name, value),
             "require-sigs" => self.require_sigs = parse_bool(name, value)?,
-            "substitute" | "build-use-substitutes" => self.substitute = parse_bool(name, value)?,
+            "substitute" | "build-use-substitutes" => {
+                self.substitute = parse_bool(name, value)?;
+                self.build.substitute = self.substitute;
+            }
             "max-substitution-jobs" => self.max_substitution_jobs = parse_int(name, value)?,
             "narinfo-cache-positive-ttl" => self.narinfo_cache_positive_ttl = parse_int(name, value)?,
             "narinfo-cache-negative-ttl" => self.narinfo_cache_negative_ttl = parse_int(name, value)?,

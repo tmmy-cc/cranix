@@ -275,19 +275,28 @@ impl BuildStatus {
 }
 
 /// A built output: its realisation id is `<drv hash modulo>!<output>`.
+/// Travels as the JSON of Nix's `Realisation`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Realisation {
     pub id: String,
     pub out_path: StorePath,
+    pub signatures: BTreeSet<String>,
+    pub dependent_realisations: BTreeMap<String, StorePath>,
 }
 
 impl Realisation {
+    pub fn new(id: String, out_path: StorePath) -> Realisation {
+        Realisation { id, out_path, signatures: BTreeSet::new(), dependent_realisations: BTreeMap::new() }
+    }
+
     pub fn to_json(&self) -> String {
+        let deps: serde_json::Map<String, serde_json::Value> =
+            self.dependent_realisations.iter().map(|(k, v)| (k.clone(), v.base_name().into())).collect();
         serde_json::json!({
+            "dependentRealisations": deps,
             "id": self.id,
             "outPath": self.out_path.base_name(),
-            "signatures": [],
-            "dependentRealisations": {},
+            "signatures": self.signatures.iter().collect::<Vec<_>>(),
         })
         .to_string()
     }
@@ -295,9 +304,38 @@ impl Realisation {
     pub fn from_json(s: &str) -> io::Result<Realisation> {
         let v: serde_json::Value = serde_json::from_str(s).map_err(|e| bad(format!("invalid realisation: {e}")))?;
         let id = v["id"].as_str().ok_or_else(|| bad("realisation without id"))?.to_string();
+        let path = |s: &str| StorePath::from_base_name(s.rsplit('/').next().unwrap_or(s)).map_err(bad);
         let out = v["outPath"].as_str().ok_or_else(|| bad("realisation without outPath"))?;
-        let base = out.rsplit('/').next().unwrap_or(out);
-        Ok(Realisation { id, out_path: StorePath::from_base_name(base).map_err(bad)? })
+        let mut r = Realisation::new(id, path(out)?);
+        for s in v["signatures"].as_array().into_iter().flatten() {
+            r.signatures.extend(s.as_str().map(String::from));
+        }
+        for (k, p) in v["dependentRealisations"].as_object().into_iter().flatten() {
+            r.dependent_realisations.insert(k.clone(), path(p.as_str().ok_or_else(|| bad("invalid dependent realisation"))?)?);
+        }
+        Ok(r)
+    }
+
+    /// The store's form of this realisation; fails for ids without a hash.
+    pub fn to_store(&self) -> std::result::Result<cranix_store::realisation::Realisation, String> {
+        use cranix_store::realisation::{DrvOutput, Realisation as R};
+        let mut r = R::new(DrvOutput::parse(&self.id)?, self.out_path.clone());
+        r.signatures = self.signatures.clone();
+        for (k, p) in &self.dependent_realisations {
+            r.dependent_realisations.insert(DrvOutput::parse(k)?, p.clone());
+        }
+        Ok(r)
+    }
+}
+
+impl From<&cranix_store::realisation::Realisation> for Realisation {
+    fn from(r: &cranix_store::realisation::Realisation) -> Realisation {
+        Realisation {
+            id: r.id.to_string(),
+            out_path: r.out_path.clone(),
+            signatures: r.signatures.clone(),
+            dependent_realisations: r.dependent_realisations.iter().map(|(k, p)| (k.to_string(), p.clone())).collect(),
+        }
     }
 }
 
@@ -546,7 +584,7 @@ mod tests {
         res.stop_time = 7;
         res.built_outputs.insert(
             "out".into(),
-            Realisation { id: format!("{}!out", Hash::sha256(b"d")), out_path: sp("00000000000000000000000000000000-bar") },
+            Realisation::new(format!("{}!out", Hash::sha256(b"d")), sp("00000000000000000000000000000000-bar")),
         );
         for v in [PROTOCOL_VERSION, 1 << 8 | 36, 1 << 8 | 28] {
             let mut buf = Vec::new();

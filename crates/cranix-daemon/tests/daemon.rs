@@ -7,12 +7,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cranix_core::{nar, Derivation, Output, StoreDir, StorePath};
-use cranix_daemon::client::Connection;
+use cranix_core::signing::SecretKey;
+use cranix_daemon::client::{ClientOptions, Connection};
 use cranix_daemon::proto::DerivedPath;
 use cranix_daemon::machines;
 use cranix_daemon::remote_build::RemoteBuilders;
 use cranix_daemon::server::{Daemon, DaemonConfig};
 use cranix_store::build::{host_system, BuildOptions};
+use cranix_store::binary_cache::BinaryCache;
+use cranix_store::settings::Settings;
+use cranix_store::substitute::Substituters;
 use cranix_store::{PathInfo, Store};
 
 fn scratch(name: &str) -> PathBuf {
@@ -74,7 +78,7 @@ fn copy_query_and_temp_roots() {
     assert_eq!(c.query_referrers(&a).unwrap(), [b.clone()].into());
     let missing = StorePath::from_base_name("00000000000000000000000000000000-nope").unwrap();
     assert_eq!(c.query_path_info(&missing).unwrap(), None);
-    assert!(c.ensure_path(&missing).unwrap_err().contains("is not valid"));
+    assert!(c.ensure_path(&missing).unwrap_err().contains("does not exist and cannot be created"));
 
     // The first connection's temporary roots keep its paths alive.
     let mut gc = connect(&daemon, true);
@@ -306,4 +310,84 @@ fn serve_protocol_roundtrip() {
     let res = c.build_paths(&[DerivedPath::Built { drv: bad, outputs: None }]).unwrap();
     assert!(!res[0].1.status.success());
     assert!(res[0].1.error_msg.contains("failed"), "{}", res[0].1.error_msg);
+}
+
+#[path = "../../cranix-store/tests/cache_server/mod.rs"]
+mod cache_server;
+
+/// A store that substitutes from `url`, trusting only `key`, whose objects
+/// live apart from the store directory so that it cannot build.
+fn substituting_store(root: &Path, sd: &StoreDir, url: &str, key: &SecretKey) -> Store {
+    let mut s = Store::open(sd.clone(), root.join("store"), root.join("var")).unwrap();
+    let mut settings = Settings::default();
+    settings.set("substituters", url).unwrap();
+    settings.set("trusted-public-keys", &key.to_public().to_string()).unwrap();
+    settings.set("narinfo-cache-negative-ttl", "0").unwrap();
+    s.set_substituters(Substituters::from_settings(&settings).unwrap());
+    s
+}
+
+#[test]
+fn daemon_substitutes_signed_paths() {
+    let root = scratch("subst");
+    let src = Store::open_at(&root.join("src")).unwrap();
+    let sd = src.dir.clone();
+    let key = SecretKey::from_seed("test-1", &[7; 32]);
+    let stranger = SecretKey::from_seed("stranger-1", &[9; 32]);
+
+    let a = src.add_text("a", b"alpha", &BTreeSet::new()).unwrap();
+    let b = src.add_text("b", format!("refers to {}", sd.print(&a)).as_bytes(), &[a.clone()].into()).unwrap();
+    let drv = write_drv(&src, "cached", "echo cached > $out", &[]);
+    let out = src.realise(&[drv.clone()], &BuildOptions::default()).unwrap()[&drv]["out"].clone();
+    // Input-addressed, so only a signature makes it trusted.
+    let fdrv = write_drv(&src, "foreign", "echo signed by someone else > $out", &[]);
+    let foreign = src.realise(&[fdrv.clone()], &BuildOptions::default()).unwrap()[&fdrv]["out"].clone();
+
+    let server = cache_server::CacheServer::start(&root.join("cache"));
+    let cache = BinaryCache::open(&server.url).unwrap();
+    cache.init_for_writing(&sd).unwrap();
+    for (p, k) in [(&a, &key), (&b, &key), (&out, &key), (&foreign, &stranger)] {
+        cache.add_path(&sd, &src.real_path(p), &src.query_info(p).unwrap().unwrap(), &[], &[k.clone()]).unwrap();
+    }
+
+    let dst = substituting_store(&root.join("dst"), &sd, &server.url, &key);
+    assert!(!dst.can_build());
+    let daemon = Arc::new(Daemon::new(dst, DaemonConfig::default()));
+    let mut c = connect(&daemon, true);
+    c.set_options(&Default::default()).unwrap();
+
+    let (build, subst, unknown, download, nar) = c.query_missing(&[DerivedPath::Opaque(b.clone())]).unwrap();
+    assert!(build.is_empty() && unknown.is_empty());
+    assert_eq!(subst, [a.clone(), b.clone()].into());
+    assert!(download > 0 && nar > 0);
+    let (_, subst, unknown, _, _) = c.query_missing(&[DerivedPath::Opaque(foreign.clone())]).unwrap();
+    assert!(subst.is_empty(), "{subst:?}");
+    assert_eq!(unknown, [foreign.clone()].into());
+
+    c.ensure_path(&b).unwrap();
+    assert!(daemon.store.is_valid(&a) && daemon.store.is_valid(&b));
+    // Paths without a signature by a trusted key are not substituted.
+    let e = c.ensure_path(&foreign).unwrap_err();
+    assert!(e.contains("does not exist and cannot be created"), "{e}");
+    assert!(!daemon.store.is_valid(&foreign));
+
+    // A derivation whose output is in the cache is substituted, although
+    // this store cannot build.
+    let drv_info = src.query_info(&drv).unwrap().unwrap();
+    c.add_multiple_to_store(&[drv_info], &nar_of(&src), true).unwrap();
+    let target = DerivedPath::Built { drv: drv.clone(), outputs: None };
+    let (build, subst, _, _, _) = c.query_missing(&[target.clone()]).unwrap();
+    assert!(build.is_empty());
+    assert_eq!(subst, [out.clone()].into());
+    let res = c.build_paths_with_results(&[target]).unwrap();
+    assert_eq!(res[0].1.status, cranix_daemon::proto::BuildStatus::Substituted, "{}", res[0].1.error_msg);
+    assert_eq!(res[0].1.built_outputs["out"].out_path, out);
+    assert_eq!(std::fs::read_to_string(daemon.store.real_path(&out)).unwrap(), "cached\n");
+    assert_eq!(daemon.store.query_sigs(&out).unwrap().len(), 1);
+
+    // Clients that turn substitution off get nothing from the caches.
+    let mut c = connect(&daemon, true);
+    c.set_options(&ClientOptions { use_substitutes: false, ..Default::default() }).unwrap();
+    let (_, _, unknown, _, _) = c.query_missing(&[DerivedPath::Opaque(foreign)]).unwrap();
+    assert_eq!(unknown.len(), 1);
 }

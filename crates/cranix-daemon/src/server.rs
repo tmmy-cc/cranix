@@ -12,9 +12,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use cranix_core::hash::{Hash, HashAlgo, HashSink};
-use cranix_core::{nar, Derivation, DrvHash, FileIngestion, StoreDir, StorePath};
+use cranix_core::{nar, Derivation, DrvHash, FileIngestion, NarInfo, StoreDir, StorePath};
 use cranix_store::build::BuildOptions;
 use cranix_store::gc_roots::GcAction;
+use cranix_store::realisation::DrvOutput;
 use cranix_store::{PathInfo, Store};
 
 use crate::proto::{self, minor, BuildResult, BuildStatus, DerivedPath, Op, Realisation};
@@ -140,6 +141,9 @@ struct Conn<'d> {
     trusted: bool,
     id: u64,
     opts: BuildOptions,
+    /// The client's `useSubstitutes`: whether its requests may download
+    /// from the daemon's substituters.
+    substitute: bool,
 }
 
 /// Outcome of an operation: an error goes to the client as `STDERR_ERROR`,
@@ -227,6 +231,7 @@ impl Daemon {
             trusted,
             id,
             opts: self.config.build.clone(),
+            substitute: true,
         };
         let res = c.run();
         self.temp_roots.lock().unwrap().remove(&id);
@@ -337,12 +342,12 @@ impl Conn<'_> {
                 reply_paths(ps.into_iter().filter(|p| self.store().is_valid(p)).collect())
             }
             Op::QuerySubstitutablePaths => {
-                self.paths()?;
-                reply_paths(BTreeSet::new())
+                let ps: Vec<StorePath> = self.paths()?.into_iter().collect();
+                reply_paths(self.substitutable_infos(&ps).into_keys().collect())
             }
             Op::HasSubstitutes => {
-                self.path()?;
-                reply_u64(0)
+                let p = self.path()?;
+                reply_u64(!self.substitutable_infos(&[p]).is_empty() as u64)
             }
             Op::QueryPathHash => {
                 let p = self.path()?;
@@ -374,14 +379,24 @@ impl Conn<'_> {
                             let names: Vec<String> = d.outputs.keys().cloned().collect();
                             reply(move |w, _, _| w.write_strings(names.iter().map(String::as_str)))
                         }
-                        _ => reply(move |w, sd, _| {
-                            w.write_u64(d.outputs.len() as u64)?;
+                        _ => {
+                            let mut map = Vec::new();
                             for (name, o) in &d.outputs {
-                                w.write_str(name)?;
-                                proto::write_opt_path(w, sd, o.path.as_ref())?;
+                                let p = match &o.path {
+                                    Some(p) => Some(p.clone()),
+                                    None => self.store().query_output_realisation(&d, name).ok().flatten().map(|r| r.out_path),
+                                };
+                                map.push((name.clone(), p));
                             }
-                            Ok(())
-                        }),
+                            reply(move |w, sd, _| {
+                                w.write_u64(map.len() as u64)?;
+                                for (name, p) in &map {
+                                    w.write_str(name)?;
+                                    proto::write_opt_path(w, sd, p.as_ref())?;
+                                }
+                                Ok(())
+                            })
+                        }
                     },
                 }
             }
@@ -406,20 +421,36 @@ impl Conn<'_> {
             }
             Op::QueryAllValidPaths => self.store().valid_paths().and_then(|v| reply_paths(v.into_iter().collect())),
             Op::QuerySubstitutablePathInfo => {
-                self.path()?;
-                reply_u64(0)
+                let p = self.path()?;
+                let info = self.substitutable_infos(&[p]).into_values().next();
+                reply(move |w, sd, _| match &info {
+                    None => w.write_u64(0),
+                    Some(ni) => {
+                        w.write_u64(1)?;
+                        write_substitutable(w, sd, ni)
+                    }
+                })
             }
             Op::QuerySubstitutablePathInfos => {
+                let mut ps = Vec::new();
                 if minor(self.version) < 22 {
-                    self.paths()?;
+                    ps.extend(self.paths()?);
                 } else {
                     let n = self.r.read_u64()?;
                     for _ in 0..n {
-                        self.path()?;
-                        self.r.read_string()?;
+                        ps.push(self.path()?);
+                        self.r.read_string()?; // content address
                     }
                 }
-                reply_u64(0)
+                let infos = self.substitutable_infos(&ps);
+                reply(move |w, sd, _| {
+                    w.write_u64(infos.len() as u64)?;
+                    for (p, ni) in &infos {
+                        proto::write_path(w, sd, p)?;
+                        write_substitutable(w, sd, ni)?;
+                    }
+                    Ok(())
+                })
             }
             Op::AddToStore => self.add_to_store()?,
             Op::AddTextToStore => {
@@ -470,11 +501,12 @@ impl Conn<'_> {
             }
             Op::EnsurePath => {
                 let p = self.path()?;
+                let res = self.substitute(&[p.clone()]);
                 if self.store().is_valid(&p) {
                     self.add_temp_root(&p);
                     reply_u64(1)
                 } else {
-                    Err(format!("path '{}' is not valid", sd.print(&p)))
+                    Err(res.err().unwrap_or_else(|| format!("path '{}' is not valid", sd.print(&p))))
                 }
             }
             Op::AddTempRoot => {
@@ -533,23 +565,20 @@ impl Conn<'_> {
                 self.r.read_u64()?; // tryFallback
                 self.r.read_u64()?; // verbosity
                 let jobs = self.r.read_u64()?;
-                self.r.read_u64()?; // maxSilentTime
+                let max_silent = self.r.read_u64()?;
                 self.r.read_u64()?; // obsolete useBuildHook
                 self.r.read_u64()?; // verboseBuild
                 self.r.read_u64()?; // obsolete logType
                 self.r.read_u64()?; // obsolete printBuildTrace
                 let cores = self.r.read_u64()?;
-                self.r.read_u64()?; // useSubstitutes
+                self.substitute = self.r.read_bool()?;
+                self.opts.max_silent_time = max_silent;
                 if minor(self.version) >= 12 {
                     let n = self.r.read_u64()?;
                     for _ in 0..n {
                         let k = self.r.read_string()?;
                         let v = self.r.read_string()?;
-                        if k == "cores" {
-                            if let Ok(n) = v.parse() {
-                                self.opts.cores = n;
-                            }
-                        }
+                        self.client_setting(&k, &v);
                     }
                 }
                 if jobs > 0 {
@@ -562,13 +591,13 @@ impl Conn<'_> {
             }
             Op::QueryMissing => {
                 let targets = proto::read_derived_paths(&mut self.r, &sd)?;
-                self.query_missing(&targets).and_then(|(build, unknown)| {
+                self.query_missing(&targets).and_then(|m| {
                     reply(move |w, sd, _| {
-                        proto::write_paths(w, sd, &build)?;
-                        proto::write_paths(w, sd, &BTreeSet::new())?;
-                        proto::write_paths(w, sd, &unknown)?;
-                        w.write_u64(0)?;
-                        w.write_u64(0)
+                        proto::write_paths(w, sd, &m.build)?;
+                        proto::write_paths(w, sd, &m.substitute)?;
+                        proto::write_paths(w, sd, &m.unknown)?;
+                        w.write_u64(m.download_size)?;
+                        w.write_u64(m.nar_size)
                     })
                 })
             }
@@ -581,17 +610,29 @@ impl Conn<'_> {
                 })
             }
             Op::QueryRealisation => {
-                self.r.read_string()?;
-                reply_u64(0)
+                let id = self.r.read_string()?;
+                let found = DrvOutput::parse(&id).and_then(|id| self.store().query_realisation(&id));
+                found.and_then(|r| {
+                    reply(move |w, sd, v| {
+                        if minor(v) < 31 {
+                            let paths: BTreeSet<StorePath> = r.iter().map(|r| r.out_path.clone()).collect();
+                            proto::write_paths(w, sd, &paths)
+                        } else {
+                            w.write_strings(r.iter().map(|r| Realisation::from(r).to_json()).collect::<Vec<_>>().iter().map(String::as_str))
+                        }
+                    })
+                })
             }
             Op::RegisterDrvOutput => {
-                if minor(self.version) < 31 {
-                    self.r.read_string()?;
-                    self.r.read_string()?;
+                let r = if minor(self.version) < 31 {
+                    let id = self.r.read_string()?;
+                    let p = self.path()?;
+                    DrvOutput::parse(&id).map(|id| cranix_store::realisation::Realisation::new(id, p))
                 } else {
-                    self.r.read_string()?;
-                }
-                reply_none()
+                    let json = self.r.read_string()?;
+                    Realisation::from_json(&json)?.to_store()
+                };
+                r.and_then(|r| self.register_drv_output(r)).and_then(|()| reply_none())
             }
             Op::AddSignatures => {
                 self.path()?;
@@ -802,23 +843,105 @@ impl Conn<'_> {
         self.store().collect_garbage_with(action, specific, &self.d.all_temp_roots(), max)
     }
 
+    /// The client's logger for messages of this request.
+    fn logger(&self) -> Arc<dyn cranix_store::build::BuildLogger> {
+        Arc::new(ClientLogger { w: Arc::clone(&self.w), version: self.version })
+    }
+
+    /// The narinfos the daemon's substituters offer for `paths`, if the
+    /// client allows substitution.
+    fn substitutable_infos(&self, paths: &[StorePath]) -> BTreeMap<StorePath, NarInfo> {
+        if !self.substitute {
+            return BTreeMap::new();
+        }
+        self.store().substitutable_infos(paths)
+    }
+
+    /// Substitutes the invalid ones among `paths`, with progress sent to
+    /// the client, and roots them for this connection.
+    fn substitute(&self, paths: &[StorePath]) -> Result<()> {
+        let missing: Vec<StorePath> = paths.iter().filter(|p| !self.store().is_valid(p)).cloned().collect();
+        if missing.is_empty() || !self.substitute {
+            return Ok(());
+        }
+        let _g = self.d.gc.read().unwrap();
+        let failed = self.store().substitute_paths_logged(&missing, Some(&self.logger()))?;
+        for p in paths.iter().filter(|p| !failed.contains(*p)) {
+            self.add_temp_root(p);
+        }
+        match failed.first() {
+            Some(p) => Err(format!("path '{}' does not exist and cannot be created", self.store().dir.print(p))),
+            None => Ok(()),
+        }
+    }
+
+    /// Applies one setting a client sends with `SetOptions`. The build
+    /// limits apply to every client; trusted clients may also enable the
+    /// experimental features the builder uses. The daemon's own settings
+    /// decide everything else, such as the sandbox and the substituters.
+    fn client_setting(&mut self, name: &str, value: &str) {
+        let num = || value.parse::<u64>().ok();
+        match name {
+            "cores" => {
+                if let Some(n) = num().filter(|n| *n > 0) {
+                    self.opts.cores = n as usize;
+                }
+            }
+            "timeout" | "build-timeout" => self.opts.timeout = num().unwrap_or(self.opts.timeout),
+            "max-silent-time" | "build-max-silent-time" => self.opts.max_silent_time = num().unwrap_or(self.opts.max_silent_time),
+            "experimental-features" | "extra-experimental-features" if self.trusted => {
+                let f: BTreeSet<&str> = value.split_whitespace().collect();
+                self.opts.ca_derivations |= f.contains("ca-derivations");
+                self.opts.impure_derivations |= f.contains("impure-derivations");
+            }
+            _ => {}
+        }
+    }
+
+    /// Records a realisation sent by the client. Untrusted clients need a
+    /// signature by one of the daemon's trusted keys.
+    fn register_drv_output(&self, r: cranix_store::realisation::Realisation) -> Result<()> {
+        let s = self.store();
+        if !self.trusted && !s.realisation_is_trusted(&r) {
+            return Err(format!(
+                "cannot register realisation '{}' because it lacks a signature by a trusted key",
+                s.dir.print(&r.out_path)
+            ));
+        }
+        if !s.is_valid(&r.out_path) {
+            return Err(format!("cannot register realisation '{}': its output path is not valid", r.id));
+        }
+        s.register_realisation(&r)
+    }
+
     /// Derivations (with the outputs asked for) among `targets`; opaque
-    /// paths must already be valid.
+    /// paths are substituted when they are missing.
     fn drvs_of(&self, targets: &[DerivedPath]) -> Result<Vec<StorePath>> {
         let mut drvs = Vec::new();
+        let mut opaque = Vec::new();
         for t in targets {
             match t {
-                DerivedPath::Opaque(p) if self.store().is_valid(p) => {}
-                DerivedPath::Opaque(p) => return Err(format!("path '{}' is not valid", self.store().dir.print(p))),
+                DerivedPath::Opaque(p) => opaque.push(p.clone()),
                 DerivedPath::Built { drv, .. } => drvs.push(drv.clone()),
             }
+        }
+        self.substitute(&opaque)?;
+        for p in &opaque {
+            if !self.store().is_valid(p) {
+                return Err(format!("path '{}' is not valid", self.store().dir.print(p)));
+            }
+            self.add_temp_root(p);
         }
         Ok(drvs)
     }
 
     fn realise(&self, drvs: &[StorePath]) -> Result<BTreeMap<StorePath, BTreeMap<String, StorePath>>> {
         let _g = self.d.gc.read().unwrap();
-        let res = self.store().realise(drvs, &self.build_opts())?;
+        let mut opts = self.build_opts();
+        if !self.substitute {
+            opts.substitute = false;
+        }
+        let res = self.store().realise(drvs, &opts)?;
         for outs in res.values() {
             for p in outs.values() {
                 self.add_temp_root(p);
@@ -832,40 +955,68 @@ impl Conn<'_> {
         self.realise(&drvs)
     }
 
+    /// The outputs of `drv` that are valid, by name.
+    fn present_outputs(&self, drv: &Derivation) -> BTreeMap<String, StorePath> {
+        let s = self.store();
+        let mut out = BTreeMap::new();
+        for (n, o) in &drv.outputs {
+            let p = match &o.path {
+                Some(p) => Some(p.clone()),
+                None => s.query_output_realisation(drv, n).ok().flatten().map(|r| r.out_path),
+            };
+            if let Some(p) = p.filter(|p| s.is_valid(p)) {
+                out.insert(n.clone(), p);
+            }
+        }
+        out
+    }
+
     fn build_with_results(&self, targets: &[DerivedPath]) -> Result<Vec<(DerivedPath, BuildResult)>> {
         let s = self.store();
         let mut before = BTreeMap::new();
         for t in targets {
-            if let DerivedPath::Built { drv, .. } = t {
-                let d = s.read_derivation(drv)?;
-                before.insert(drv.clone(), d.outputs.values().all(|o| o.path.as_ref().is_some_and(|p| s.is_valid(p))));
+            match t {
+                DerivedPath::Built { drv, .. } => {
+                    let d = s.read_derivation(drv)?;
+                    before.insert(drv.clone(), self.present_outputs(&d).len() == d.outputs.len());
+                }
+                DerivedPath::Opaque(p) => {
+                    before.insert(p.clone(), s.is_valid(p));
+                }
             }
         }
         let all = self.build_targets(targets);
-        let mut hashes = HashMap::new();
         let mut out = Vec::new();
         for t in targets {
             let res = match t {
-                DerivedPath::Opaque(p) if s.is_valid(p) => BuildResult::new(BuildStatus::AlreadyValid),
-                DerivedPath::Opaque(p) => BuildResult::failure(format!("path '{}' is not valid", s.dir.print(p))),
+                DerivedPath::Opaque(p) if s.is_valid(p) => {
+                    BuildResult::new(if before[p] { BuildStatus::AlreadyValid } else { BuildStatus::Substituted })
+                }
+                DerivedPath::Opaque(p) => {
+                    let msg = all.as_ref().err().cloned().unwrap_or_else(|| format!("path '{}' is not valid", s.dir.print(p)));
+                    BuildResult { status: BuildStatus::NoSubstituters, ..BuildResult::failure(msg) }
+                }
                 DerivedPath::Built { drv, outputs } => {
                     let d = s.read_derivation(drv)?;
-                    let wanted: Vec<(&String, &StorePath)> = d
-                        .outputs
-                        .iter()
-                        .filter(|(n, _)| outputs.as_ref().map_or(true, |o| o.contains(*n)))
-                        .filter_map(|(n, o)| Some((n, o.path.as_ref()?)))
-                        .collect();
-                    if wanted.iter().all(|(_, p)| s.is_valid(p)) {
-                        let status = if before.get(drv) == Some(&true) { BuildStatus::AlreadyValid } else { BuildStatus::Built };
+                    let present = self.present_outputs(&d);
+                    let wanted: Vec<&String> = d.outputs.keys().filter(|n| outputs.as_ref().map_or(true, |o| o.contains(*n))).collect();
+                    if wanted.iter().all(|n| present.contains_key(*n)) {
+                        let built_here = wanted.iter().any(|n| s.is_ultimate(&present[*n]).unwrap_or(false));
+                        let status = match before.get(drv) {
+                            Some(true) => BuildStatus::AlreadyValid,
+                            _ if built_here => BuildStatus::Built,
+                            _ => BuildStatus::Substituted,
+                        };
                         let mut res = BuildResult::new(status);
                         res.times_built = (status == BuildStatus::Built) as u64;
-                        let h = s.read_derivation(drv)?.hash_modulo(&s.dir, true, &mut |p| drv_hash(s, p, &mut hashes))?;
-                        for (n, p) in wanted {
-                            res.built_outputs.insert(
-                                n.clone(),
-                                Realisation { id: format!("sha256:{}!{n}", h.hash.to_base16()), out_path: p.clone() },
-                            );
+                        let h = s.static_output_hash(&d)?;
+                        for n in wanted {
+                            let id = cranix_store::realisation::DrvOutput { drv_hash: h.clone(), output: n.clone() };
+                            let r = match s.query_realisation(&id)? {
+                                Some(r) if r.out_path == present[n] => Realisation::from(&r),
+                                _ => Realisation::new(id.to_string(), present[n].clone()),
+                            };
+                            res.built_outputs.insert(n.clone(), r);
                         }
                         res
                     } else {
@@ -885,7 +1036,9 @@ impl Conn<'_> {
         }
         let res = {
             let _g = self.d.gc.read().unwrap();
-            build_basic_result(self.store(), drv_path, drv, &self.build_opts())
+            let mut opts = self.build_opts();
+            opts.substitute &= self.substitute;
+            build_basic_result(self.store(), drv_path, drv, &opts)
         };
         for r in res.built_outputs.values() {
             self.add_temp_root(&r.out_path);
@@ -893,18 +1046,17 @@ impl Conn<'_> {
         Ok(res)
     }
 
-    /// Derivations that would be built for `targets`, and targets that are
-    /// neither valid nor buildable.
-    fn query_missing(&self, targets: &[DerivedPath]) -> Result<(BTreeSet<StorePath>, BTreeSet<StorePath>)> {
+    /// What realising `targets` would do: the derivations it would build,
+    /// the paths it would substitute (with their download and unpacked
+    /// sizes), and the targets that are neither valid nor obtainable.
+    fn query_missing(&self, targets: &[DerivedPath]) -> Result<Missing> {
         let s = self.store();
-        let mut build = BTreeSet::new();
-        let mut unknown = BTreeSet::new();
+        let mut m = Missing::default();
         let mut todo: Vec<StorePath> = Vec::new();
+        let mut want_subst: Vec<StorePath> = Vec::new();
         for t in targets {
             match t {
-                DerivedPath::Opaque(p) if !s.is_valid(p) => {
-                    unknown.insert(p.clone());
-                }
+                DerivedPath::Opaque(p) if !s.is_valid(p) => want_subst.push(p.clone()),
                 DerivedPath::Opaque(_) => {}
                 DerivedPath::Built { drv, .. } => todo.push(drv.clone()),
             }
@@ -915,16 +1067,63 @@ impl Conn<'_> {
                 continue;
             }
             let Ok(d) = s.read_derivation(&p) else {
-                unknown.insert(p);
+                // A missing derivation may itself come from a cache.
+                want_subst.push(p);
                 continue;
             };
-            if d.outputs.values().any(|o| o.path.as_ref().map_or(true, |p| !s.is_valid(p))) {
-                build.insert(p);
-                todo.extend(d.input_drvs.keys().cloned());
+            if self.present_outputs(&d).len() == d.outputs.len() {
+                continue;
+            }
+            let static_outs: Option<Vec<StorePath>> = d.outputs.values().map(|o| o.path.clone()).collect();
+            if let Some(outs) = static_outs.filter(|_| self.substitute) {
+                if let Some(plan) = s.substitution_plan(&outs) {
+                    m.add_plan(plan);
+                    continue;
+                }
+            }
+            m.build.insert(p);
+            todo.extend(d.input_drvs.keys().cloned());
+            want_subst.extend(d.input_srcs.iter().filter(|q| !s.is_valid(q)).cloned());
+        }
+        for p in want_subst {
+            match s.substitution_plan(std::slice::from_ref(&p)).filter(|_| self.substitute) {
+                Some(plan) => m.add_plan(plan),
+                None => {
+                    m.unknown.insert(p);
+                }
             }
         }
-        Ok((build, unknown))
+        Ok(m)
     }
+}
+
+/// The answer to `QueryMissing`.
+#[derive(Default)]
+struct Missing {
+    build: BTreeSet<StorePath>,
+    substitute: BTreeSet<StorePath>,
+    unknown: BTreeSet<StorePath>,
+    download_size: u64,
+    nar_size: u64,
+}
+
+impl Missing {
+    fn add_plan(&mut self, plan: BTreeMap<StorePath, NarInfo>) {
+        for (p, ni) in plan {
+            if self.substitute.insert(p) {
+                self.download_size += ni.file_size.unwrap_or(0);
+                self.nar_size += ni.nar_size;
+            }
+        }
+    }
+}
+
+/// A `SubstitutablePathInfo`: deriver, references, download and NAR size.
+fn write_substitutable(w: &mut W, sd: &StoreDir, ni: &NarInfo) -> io::Result<()> {
+    proto::write_opt_path(w, sd, ni.deriver.as_ref())?;
+    proto::write_paths(w, sd, &ni.references)?;
+    w.write_u64(ni.file_size.unwrap_or(0))?;
+    w.write_u64(ni.nar_size)
 }
 
 /// Sends build activity to a client as Nix does: an activity of type
@@ -1053,14 +1252,14 @@ impl ImportCtx<'_> {
 /// Builds a derivation sent with `BuildDerivation` and describes the
 /// outcome as a `BuildResult`.
 pub fn build_basic_result(s: &Store, drv_path: &StorePath, drv: &Derivation, opts: &BuildOptions) -> BuildResult {
-    let valid = drv.outputs.values().all(|o| o.path.as_ref().is_some_and(|p| s.is_valid(p)));
+    let valid = s.output_paths(drv_path, drv).is_ok_and(|o| o.values().all(|p| s.is_valid(p)));
     let start = now();
-    let mut res = if valid {
-        BuildResult::new(BuildStatus::AlreadyValid)
+    let (mut res, outputs) = if valid {
+        (BuildResult::new(BuildStatus::AlreadyValid), s.output_paths(drv_path, drv).unwrap_or_default())
     } else {
         match s.build_basic(drv_path, drv, opts) {
-            Ok(()) => BuildResult { times_built: 1, ..BuildResult::new(BuildStatus::Built) },
-            Err(e) => BuildResult { status: BuildStatus::PermanentFailure, ..BuildResult::failure(e) },
+            Ok(o) => (BuildResult { times_built: 1, ..BuildResult::new(BuildStatus::Built) }, o),
+            Err(e) => (BuildResult { status: BuildStatus::PermanentFailure, ..BuildResult::failure(e) }, BTreeMap::new()),
         }
     };
     res.start_time = start;
@@ -1073,10 +1272,10 @@ pub fn build_basic_result(s: &Store, drv_path: &StorePath, drv: &Derivation, opt
             Ok(h) => format!("sha256:{}!{n}", h.hash.to_base16()),
             Err(_) => format!("!{n}"),
         };
-        for (n, o) in &drv.outputs {
-            if let Some(p) = &o.path {
-                res.built_outputs.insert(n.clone(), Realisation { id: id(n), out_path: p.clone() });
-            }
+        for (n, p) in &outputs {
+            let r = DrvOutput::parse(&id(n)).ok().and_then(|i| s.query_realisation(&i).ok().flatten()).filter(|r| r.out_path == *p);
+            let r = r.map(|r| Realisation::from(&r)).unwrap_or_else(|| Realisation::new(id(n), p.clone()));
+            res.built_outputs.insert(n.clone(), r);
         }
     }
     res

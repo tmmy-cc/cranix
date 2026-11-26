@@ -55,6 +55,8 @@ pub struct BuildOptions {
     pub ca_derivations: bool,
     /// The `impure-derivations` experimental feature.
     pub impure_derivations: bool,
+    /// Whether realising may fetch outputs from the store's substituters.
+    pub substitute: bool,
 }
 
 /// Receives the activity of builds: one `start`, the builder's output
@@ -163,6 +165,7 @@ impl Default for BuildOptions {
             logger: None,
             ca_derivations: false,
             impure_derivations: false,
+            substitute: true,
         }
     }
 }
@@ -323,7 +326,9 @@ impl Store {
                         missing.extend(self.missing_output_paths(&loaded[p]).into_iter().flatten());
                     }
                 }
-                self.query_substitutable(&missing);
+                if opts.substitute {
+                    self.query_substitutable(&missing);
+                }
                 let mut next = Vec::new();
                 for p in frontier {
                     if !seen.insert(p.clone()) {
@@ -334,7 +339,7 @@ impl Store {
                         continue;
                     }
                     match self.missing_output_paths(d) {
-                        Some(outs) if !no_subst.contains(&p) && self.substitutable(&outs) => {
+                        Some(outs) if opts.substitute && !no_subst.contains(&p) && self.substitutable(&outs) => {
                             fetch.insert(p, outs);
                         }
                         _ => {
@@ -364,8 +369,8 @@ impl Store {
             // Sources the builds need may be in a cache too.
             let srcs: Vec<StorePath> =
                 needed.iter().flat_map(|p| loaded[p].input_srcs.iter()).filter(|s| !self.is_valid(s)).cloned().collect();
-            if !srcs.is_empty() {
-                self.substitute_paths(&srcs)?;
+            if !srcs.is_empty() && opts.substitute {
+                self.substitute_paths_logged(&srcs, opts.logger.as_ref())?;
             }
         }
 
@@ -399,14 +404,17 @@ impl Store {
     /// Builds a derivation that is held in memory and may have no `.drv`
     /// file in this store (the daemon's `BuildDerivation`). Its inputs must
     /// all be listed in `input_srcs` and be valid.
-    pub fn build_basic(&self, drv_path: &StorePath, drv: &Derivation, opts: &BuildOptions) -> Result<()> {
+    /// Returns the output paths.
+    pub fn build_basic(&self, drv_path: &StorePath, drv: &Derivation, opts: &BuildOptions) -> Result<BTreeMap<String, StorePath>> {
         if !self.missing_outputs(drv)? {
-            return Ok(());
+            return self.output_paths(drv_path, drv);
         }
         if !self.can_build() && opts.hook.is_none() {
             return Err(self.cannot_build());
         }
-        self.build_one(drv_path, drv, &HashMap::new(), opts, "", &Mutex::new(HashMap::new()))
+        let built = Mutex::new(HashMap::new());
+        self.build_one(drv_path, drv, &HashMap::new(), opts, "", &built)?;
+        Ok(built.into_inner().unwrap().remove(drv_path).unwrap_or_default())
     }
 
     fn run_scheduler(

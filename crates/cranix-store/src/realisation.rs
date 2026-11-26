@@ -9,6 +9,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+use cranix_core::signing::{PublicKey, SecretKey};
 use cranix_core::{Derivation, DrvHash, Hash, StorePath};
 use serde_json::{json, Map, Value};
 
@@ -77,7 +78,32 @@ impl Realisation {
     }
 }
 
+impl Realisation {
+    /// The text a signature of this realisation signs: its JSON without
+    /// the signatures, as Nix's `Realisation::fingerprint`.
+    pub fn fingerprint(&self) -> String {
+        let mut v = self.to_json();
+        v.as_object_mut().unwrap().remove("signatures");
+        v.to_string()
+    }
+
+    pub fn sign(&mut self, key: &SecretKey) {
+        self.signatures.insert(key.sign(self.fingerprint().as_bytes()));
+    }
+
+    /// Whether one of the signatures is by one of `keys`.
+    pub fn is_signed_by(&self, keys: &[PublicKey]) -> bool {
+        cranix_core::signing::verify_any(keys, self.fingerprint().as_bytes(), &self.signatures)
+    }
+}
+
 impl Store {
+    /// Whether `r` carries a signature by one of the store's
+    /// `trusted-public-keys`.
+    pub fn realisation_is_trusted(&self, r: &Realisation) -> bool {
+        r.is_signed_by(self.substituters().keys())
+    }
+
     fn realisation_file(&self, id: &DrvOutput) -> PathBuf {
         self.state.join("realisations").join(format!("{id}.doi"))
     }

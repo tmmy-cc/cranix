@@ -478,7 +478,7 @@ impl Connection {
                     for (name, p) in self.query_derivation_output_map(drv)? {
                         if outputs.as_ref().map_or(true, |o| o.contains(&name)) {
                             if let Some(p) = p {
-                                res.built_outputs.insert(name.clone(), proto::Realisation { id: format!("!{name}"), out_path: p });
+                                res.built_outputs.insert(name.clone(), proto::Realisation::new(format!("!{name}"), p));
                             }
                         }
                     }

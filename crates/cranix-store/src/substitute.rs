@@ -4,7 +4,7 @@
 //! Signatures a path arrived with are kept as `Sig:` lines in its metadata
 //! file, so that copying it on to another cache preserves them.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::Write;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -55,7 +55,7 @@ impl Substituters {
 
     pub fn from_settings(s: &Settings) -> Result<Substituters> {
         if !s.substitute {
-            return Ok(Substituters::default());
+            return Ok(Substituters::new(Vec::new(), trusted_keys(&s.trusted_public_keys), s.require_sigs, 1));
         }
         let mut caches = Vec::new();
         for u in &s.substituters {
@@ -70,6 +70,11 @@ impl Substituters {
 
     pub fn is_empty(&self) -> bool {
         self.caches.is_empty()
+    }
+
+    /// The keys substitutes must be signed by.
+    pub fn keys(&self) -> &[PublicKey] {
+        &self.keys
     }
 }
 
@@ -208,6 +213,38 @@ impl Store {
         let missing: Vec<StorePath> = paths.iter().filter(|p| !self.is_valid(p)).cloned().collect();
         self.prefetch(&missing);
         missing.iter().all(|p| self.lookup(p).is_some())
+    }
+
+    /// The narinfos the caches offer for the invalid paths among `paths`.
+    pub fn substitutable_infos(&self, paths: &[StorePath]) -> BTreeMap<StorePath, NarInfo> {
+        if self.subst.is_empty() {
+            return BTreeMap::new();
+        }
+        let missing: Vec<StorePath> = paths.iter().filter(|p| !self.is_valid(p)).cloned().collect();
+        self.prefetch(&missing);
+        missing.into_iter().filter_map(|p| Some((p.clone(), self.lookup(&p)?.1))).collect()
+    }
+
+    /// The invalid paths of the closures of `paths` that substituting them
+    /// would fetch, with their narinfos; `None` if some path in them cannot
+    /// be substituted.
+    pub fn substitution_plan(&self, paths: &[StorePath]) -> Option<BTreeMap<StorePath, NarInfo>> {
+        let mut plan = BTreeMap::new();
+        let mut frontier: Vec<StorePath> = paths.iter().filter(|p| !self.is_valid(p)).cloned().collect();
+        while !frontier.is_empty() {
+            let infos = self.substitutable_infos(&frontier);
+            let mut next = Vec::new();
+            for p in frontier {
+                if plan.contains_key(&p) {
+                    continue;
+                }
+                let ni = infos.get(&p)?.clone();
+                next.extend(ni.references.iter().filter(|r| **r != p && !self.is_valid(r) && !plan.contains_key(*r)).cloned());
+                plan.insert(p, ni);
+            }
+            frontier = next;
+        }
+        Some(plan)
     }
 
     /// Queries substitutes for many paths at once.
