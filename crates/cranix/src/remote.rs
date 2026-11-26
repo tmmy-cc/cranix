@@ -14,25 +14,8 @@ use cranix_daemon::proto::DerivedPath;
 use cranix_daemon::remote_build::RemoteBuilders;
 use cranix_daemon::server::{Daemon, DaemonConfig};
 use cranix_store::build::{default_root, BuildOptions};
+use cranix_store::settings::Settings;
 use cranix_store::Store;
-
-fn conf_dir() -> PathBuf {
-    PathBuf::from(std::env::var("NIX_CONF_DIR").unwrap_or_else(|_| "/etc/nix".into()))
-}
-
-/// The `builders` value from `nix.conf`, defaulting like Nix to the
-/// machines file next to it.
-pub fn default_builders() -> String {
-    let conf = std::fs::read_to_string(conf_dir().join("nix.conf")).unwrap_or_default();
-    for line in conf.lines() {
-        if let Some((k, v)) = line.split_once('=') {
-            if k.trim() == "builders" {
-                return v.trim().to_string();
-            }
-        }
-    }
-    format!("@{}", conf_dir().join("machines").display())
-}
 
 /// Installs remote builders from `spec` into `opts`, raising the number of
 /// concurrent builds by the machines' job slots.
@@ -133,7 +116,7 @@ impl Session {
 
 /// `cranix store serve [--write]`, also reachable as `cranix --serve [--write]`
 /// so that `ssh://` clients can run it in place of `nix-store`.
-pub fn cmd_serve(store: Store, args: &[String], mut opts: BuildOptions, builders: &str) -> Result<(), String> {
+pub fn cmd_serve(store: Store, args: &[String], settings: &Settings) -> Result<(), String> {
     let mut write = false;
     for a in args {
         match a.as_str() {
@@ -141,16 +124,23 @@ pub fn cmd_serve(store: Store, args: &[String], mut opts: BuildOptions, builders
             a => return Err(format!("unknown serve option '{a}'")),
         }
     }
-    configure_builders(&mut opts, builders)?;
+    let mut opts = settings.build_options();
+    configure_builders(&mut opts, &settings.builders)?;
     cranix_daemon::serve::serve(&store, std::io::stdin().lock(), std::io::stdout().lock(), write, &opts)
 }
 
-/// `cranix daemon [--stdio] [--socket PATH] [--trusted-users U] [--allowed-users U] [--force-trusted|--force-untrusted]`
-pub fn cmd_daemon(store: Store, args: &[String], opts: BuildOptions, builders: &str) -> Result<(), String> {
-    let mut config = DaemonConfig { build: opts, ..Default::default() };
+/// `cranix daemon [--stdio] [--socket PATH] [--force-trusted|--force-untrusted]`;
+/// `trusted-users`, `allowed-users` and the build settings come from
+/// `settings`.
+pub fn cmd_daemon(store: Store, args: &[String], settings: &Settings) -> Result<(), String> {
+    let mut config = DaemonConfig {
+        trusted_users: settings.trusted_users.clone(),
+        allowed_users: settings.allowed_users.clone(),
+        build: settings.build_options(),
+        ..Default::default()
+    };
     let mut stdio = false;
     let mut socket = store.state_dir().join("daemon-socket/socket");
-    let list = |s: &str| s.split([' ', ',']).filter(|x| !x.is_empty()).map(String::from).collect::<Vec<_>>();
     let mut force: Option<bool> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -158,12 +148,9 @@ pub fn cmd_daemon(store: Store, args: &[String], opts: BuildOptions, builders: &
         match a.as_str() {
             "--stdio" => stdio = true,
             "--socket" => socket = PathBuf::from(val()?),
-            "--trusted-users" => config.trusted_users = list(&val()?),
-            "--allowed-users" => config.allowed_users = list(&val()?),
             "--force-trusted" => force = Some(true),
             "--force-untrusted" => force = Some(false),
-            "-j" | "--max-jobs" => config.build.jobs = val()?.parse().map_err(|_| "invalid --max-jobs value")?,
-            "--cores" => config.build.cores = val()?.parse().map_err(|_| "invalid --cores value")?,
+            "-j" => config.build.jobs = val()?.parse().map_err(|_| "invalid -j value")?,
             a => return Err(format!("unknown daemon option '{a}'")),
         }
     }
@@ -175,7 +162,7 @@ pub fn cmd_daemon(store: Store, args: &[String], opts: BuildOptions, builders: &
         }
         None => {}
     }
-    configure_builders(&mut config.build, builders)?;
+    configure_builders(&mut config.build, &settings.builders)?;
     let daemon = Arc::new(Daemon::new(store, config));
     if stdio {
         daemon.serve_stdio(force != Some(false))

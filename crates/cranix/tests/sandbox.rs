@@ -59,6 +59,9 @@ fn build(store: &TempStore, args: &[&str]) -> Output {
         .args(args)
         .current_dir(repo())
         .env_remove("NIX_CONFIG")
+        .env_remove("CRANIX_CONFIG")
+        .env("NIX_CONF_DIR", store.0.join("no-conf"))
+        .env("NIX_USER_CONF_FILES", "")
         .output()
         .unwrap()
 }

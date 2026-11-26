@@ -9,7 +9,7 @@
 pub mod binary_cache;
 pub mod build;
 mod ca;
-pub mod config;
+pub mod settings;
 mod fsutil;
 pub mod gc_roots;
 pub mod http;

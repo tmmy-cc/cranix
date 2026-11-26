@@ -29,10 +29,19 @@ pub enum SandboxMode {
 impl SandboxMode {
     pub fn parse(s: &str) -> Result<SandboxMode> {
         match s {
-            "true" => Ok(SandboxMode::Enabled),
-            "false" => Ok(SandboxMode::Disabled),
+            "true" | "yes" | "1" => Ok(SandboxMode::Enabled),
+            "false" | "no" | "0" => Ok(SandboxMode::Disabled),
             "relaxed" => Ok(SandboxMode::Relaxed),
             _ => Err(format!("option 'sandbox' has invalid value '{s}'; expected 'true', 'false' or 'relaxed'")),
+        }
+    }
+
+    /// The setting's value as `nix.conf` spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            SandboxMode::Disabled => "false",
+            SandboxMode::Enabled => "true",
+            SandboxMode::Relaxed => "relaxed",
         }
     }
 

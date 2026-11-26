@@ -524,7 +524,7 @@ mod tests {
             assert_eq!(back, ni);
             assert_eq!(back.compression, comp);
             assert!(back.is_trusted(&dir, &[key.to_public()]));
-            assert!(!back.is_trusted(&dir, &[PublicKey::parse(crate::config::DEFAULT_CACHE_KEY).unwrap()]));
+            assert!(!back.is_trusted(&dir, &[PublicKey::parse(crate::settings::DEFAULT_CACHE_KEY).unwrap()]));
             let dest = root.join(format!("out-{comp}"));
             cache.fetch_nar(&dir, &back, &dest).unwrap();
             assert_eq!(fs::read(dest.join("sub/file")).unwrap(), b"contents");

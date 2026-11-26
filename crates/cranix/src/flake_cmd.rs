@@ -57,15 +57,6 @@ pub fn take_flake_flags(args: &mut Vec<String>) -> Result<FlakeFlags, String> {
                 }
                 cranix_fetchers::registry::override_registry(from.input, to.input, extra);
             }
-            "--option" => {
-                let k = val(&a)?;
-                let v = val(&a)?;
-                cranix_fetchers::set_settings(|s| s.set(&k, &v));
-            }
-            "--tarball-ttl" => {
-                let v = val(&a)?;
-                cranix_fetchers::set_settings(|s| s.set("tarball-ttl", &v));
-            }
             _ => rest.push(a),
         }
     }
@@ -83,7 +74,7 @@ pub fn new_eval(cli: &Cli, impure: bool) -> Result<Rc<Eval>, String> {
     let store = crate::open_store(cli)?;
     let pure = cli.pure || !impure;
     let search_path = if pure { Vec::new() } else { cli.search.clone() };
-    let ev = Eval::new(store, Options { search_path, system: cli.system.clone(), pure, trace_verbose: false, experimental_features: cli.features.clone(), resolve_search: None });
+    let ev = Eval::new(store, Options { search_path, system: cli.system().to_string(), pure, trace_verbose: false, experimental_features: cli.settings.experimental_features.clone(), resolve_search: None });
     Ok(ev)
 }
 
@@ -164,7 +155,7 @@ pub fn eval_installable(ev: &Eval, cli: &Cli, flags: &FlakeFlags, spec: &str, ki
     }
     let locked = flake::lock_flake(ev, &r, &lock)?;
     let outputs = flake::call_flake(ev, &locked)?;
-    let (defs, prefixes) = defaults(kind, &cli.system);
+    let (defs, prefixes) = defaults(kind, cli.system());
     let candidates: Vec<String> = if frag.is_empty() {
         defs
     } else if let Some(f) = frag.strip_prefix('.') {
@@ -604,7 +595,7 @@ impl Show<'_> {
 fn show(ev: &Eval, cli: &Cli, lf: &LockedFlake, outputs: &Value, all_systems: bool, legacy: bool, json: bool) -> R<String> {
     // Nix writes the colours regardless of where stdout goes.
     let color = !json;
-    let mut s = Show { ev, system: &cli.system, all_systems, legacy, json, color };
+    let mut s = Show { ev, system: cli.system(), all_systems, legacy, json, color };
     let outs = match ev.force_attrs(outputs)?.get_str("outputs") {
         Some(o) => o.clone(),
         None => outputs.clone(),
@@ -626,7 +617,7 @@ fn check(ev: &Eval, cli: &Cli, outputs: &Value, build: bool) -> R<()> {
         let per_system_drvs = matches!(name, "packages" | "checks" | "devShells");
         if per_system_drvs || matches!(name, "apps" | "formatter" | "legacyPackages") {
             for (sys, sv) in ev.force_attrs(v)?.iter() {
-                if sys.as_str() != cli.system || name == "legacyPackages" {
+                if sys.as_str() != cli.system() || name == "legacyPackages" {
                     continue;
                 }
                 if name == "formatter" {

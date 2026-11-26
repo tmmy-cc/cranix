@@ -11,8 +11,8 @@ use cranix_core::{nar, FileIngestion, OutputKind, StorePath};
 use cranix_eval::value::{Attrs, Sym};
 use cranix_eval::{print, Eval, Options, RenderOptions, Value};
 use cranix_store::binary_cache::{read_secret_keys, BinaryCache};
-use cranix_store::build::{default_root, host_system, BuildOptions};
-use cranix_store::config::Settings;
+use cranix_store::build::{default_root, BuildOptions};
+use cranix_store::settings::{Kind, Settings};
 use cranix_store::substitute::{http_client, trusted_keys, Substituters};
 use cranix_store::Store;
 
@@ -49,7 +49,7 @@ commands:
   copy --to URL PATH... | copy --from URL PATH...   copy closures to or from a binary cache
   key generate-secret --key-name NAME | key convert-secret-to-public < KEY
   store serve [--write]                          serve the store to ssh:// clients (also: --serve)
-  daemon [--stdio] [--socket PATH] [--trusted-users U] [--allowed-users U] [--force-trusted|--force-untrusted]
+  daemon [--stdio] [--socket PATH] [--force-trusted|--force-untrusted]
                                                  serve the store to Nix clients
 
 global options:
@@ -58,28 +58,26 @@ global options:
   --store daemon | unix://SOCKET[?store=DIR] | ssh-ng://[USER@]HOST | ssh://[USER@]HOST
                     build through a Nix daemon (evaluation still writes to the default store)
   --builders SPEC   remote builders in Nix's machines format, or @FILE
-                    (default: `builders` from nix.conf, else @/etc/nix/machines)
+                    (the `builders` setting; default @/etc/nix/machines)
   -I [PREFIX=]PATH  add to the search path (also read from $NIX_PATH)
   --arg NAME EXPR, --argstr NAME STRING   arguments for auto-called functions
   --system SYSTEM   value of builtins.currentSystem
   --pure            restrict impure builtins
   --show-trace      show the full trace of evaluation errors
-  --option NAME VALUE   set a configuration setting (also --NAME VALUE, --[no-]NAME)
-                    settings: substituters, trusted-public-keys, require-sigs,
-                    substitute, secret-key-files, max-substitution-jobs
-                    (and extra-*), read from ~/.config/cranix/cranix.conf and $CRANIX_CONFIG
+  --option NAME VALUE   set a setting; every setting NAME also has the flags
+                    --NAME VALUE, --extra-NAME VALUE (lists) or --NAME/--no-NAME
+                    (Booleans), e.g. --sandbox, --timeout N, --substituters URLS,
+                    --extra-experimental-features ca-derivations, --trusted-users U
+                    settings are read, later ones winning, from $NIX_CONF_DIR/nix.conf
+                    (/etc/nix), ~/.config/nix/nix.conf ($XDG_CONFIG_HOME,
+                    $NIX_USER_CONF_FILES), ~/.config/cranix/cranix.conf,
+                    $CRANIX_CONFIG, $NIX_CONFIG and then the command line
   --store URL       for 'store path-info', read a binary cache (file:// or https://)
-  --sandbox, --no-sandbox, --timeout N, --max-silent-time N
-                    shorthands for the build settings sandbox (true|false|relaxed),
-                    timeout and max-silent-time; sandbox-paths via --option
-  --experimental-features FEATURES, --extra-experimental-features FEATURES
-                    set or extend the enabled experimental features (also read
-                    from nix.conf and $NIX_CONFIG), e.g. ca-derivations
 
 flake options (eval, build, run, shell, develop, flake):
   --impure, --no-write-lock-file, --no-update-lock-file, --recreate-lock-file,
   --commit-lock-file, --update-input PATH, --override-input PATH REF,
-  --override-flake FROM TO, --no-registries, --refresh, --option NAME VALUE
+  --override-flake FROM TO, --no-registries, --refresh
 
 installables are flake references with an optional attribute path, e.g.
   .#hello, nixpkgs#hello, github:NixOS/nixpkgs/nixos-24.05#hello
@@ -88,18 +86,15 @@ installables are flake references with an optional attribute path, e.g.
 struct Cli {
     store: Option<PathBuf>,
     remote: Option<cranix_daemon::client::StoreUri>,
-    builders: Option<String>,
     search: Vec<(String, String)>,
     /// `prefix=flake:ref` search path entries, resolved when evaluating.
     flake_search: Vec<(String, String)>,
     args: Vec<(String, ArgVal)>,
-    system: String,
     pure: bool,
     show_trace: bool,
+    /// The configuration files, the environment and the command line's
+    /// settings, in that order of precedence.
     settings: Settings,
-    /// Build settings from `NIX_CONFIG` and `--option`, in order of precedence.
-    options: Vec<(String, String)>,
-    features: BTreeSet<String>,
     rest: Vec<String>,
 }
 
@@ -133,6 +128,11 @@ fn split_nix_path(np: &str) -> Vec<String> {
 }
 
 impl Cli {
+    /// The system that builds run on and `builtins.currentSystem`.
+    fn system(&self) -> &str {
+        &self.settings.build.system
+    }
+
     fn add_search(&mut self, s: &str) {
         let (prefix, path) = s.split_once('=').unwrap_or(("", s));
         if path.starts_with("flake:") {
@@ -147,34 +147,23 @@ fn parse_cli() -> Result<Cli, String> {
     let mut cli = Cli {
         store: None,
         remote: None,
-        builders: None,
         search: Vec::new(),
         flake_search: Vec::new(),
         args: Vec::new(),
-        system: host_system(),
         pure: false,
         show_trace: false,
         settings: Settings::load()?,
-        features: configured_features(),
-        options: Vec::new(),
         rest: Vec::new(),
     };
-    if let Ok(conf) = std::env::var("NIX_CONFIG") {
-        for (k, v) in parse_conf(&conf) {
-            // configured_features has read the experimental features.
-            if k.ends_with("experimental-features") {
-                continue;
-            } else if Settings::is_known(&k) {
-                cli.settings.set(&k, &v)?;
-            } else {
-                cli.options.push((k, v));
-            }
-        }
-    }
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().ok_or_else(|| format!("{name} requires an argument"));
         match a.as_str() {
+            // What follows belongs to the program being run.
+            "--" | "-c" | "--command" if !cli.rest.is_empty() => {
+                cli.rest.push(a);
+                cli.rest.extend(it.by_ref());
+            }
             "--store" => {
                 let v = val("--store")?;
                 match cranix_daemon::client::StoreUri::parse(&v) {
@@ -182,7 +171,6 @@ fn parse_cli() -> Result<Cli, String> {
                     None => cli.store = Some(PathBuf::from(v)),
                 }
             }
-            "--builders" => cli.builders = Some(val("--builders")?),
             "-I" => {
                 let v = val("-I")?;
                 cli.add_search(&v);
@@ -197,45 +185,26 @@ fn parse_cli() -> Result<Cli, String> {
                 let s = val("--argstr")?;
                 cli.args.push((n, ArgVal::Str(s)));
             }
-            "--system" => cli.system = val("--system")?,
             "--pure" => cli.pure = true,
             "--show-trace" => cli.show_trace = true,
             "--option" => {
                 let n = val("--option")?;
                 let v = val("--option")?;
-                if n == "experimental-features" {
-                    cli.features = v.split_whitespace().map(String::from).collect();
-                } else if n == "extra-experimental-features" {
-                    cli.features.extend(v.split_whitespace().map(String::from));
-                } else if Settings::is_known(&n) {
-                    cli.settings.set(&n, &v)?;
-                } else {
-                    cli.options.push((n, v));
-                }
+                cli.settings.set(&n, &v)?;
             }
-            "--sandbox" => cli.options.push(("sandbox".into(), "true".into())),
-            "--no-sandbox" => cli.options.push(("sandbox".into(), "false".into())),
-            f if f.strip_prefix("--").is_some_and(|n| Settings::is_known(n) && !Settings::is_bool(n)) => {
-                let v = val(f)?;
-                cli.settings.set(&f[2..], &v)?;
-            }
-            f if f.strip_prefix("--").is_some_and(Settings::is_bool) => cli.settings.set(&f[2..], "true")?,
-            f if f.strip_prefix("--no-").is_some_and(Settings::is_bool) => cli.settings.set(&f[5..], "false")?,
-            "--timeout" => {
-                let v = val("--timeout")?;
-                cli.options.push(("timeout".into(), v));
-            }
-            "--max-silent-time" => {
-                let v = val("--max-silent-time")?;
-                cli.options.push(("max-silent-time".into(), v));
-            }
-            "--experimental-features" => cli.features = val(&a)?.split_whitespace().map(String::from).collect(),
-            "--extra-experimental-features" => cli.features.extend(val(&a)?.split_whitespace().map(String::from)),
+            "--relaxed-sandbox" => cli.settings.set("sandbox", "relaxed")?,
             "-h" | "--help" => {
                 print!("{USAGE}");
                 std::process::exit(0);
             }
-            _ => cli.rest.push(a),
+            f => match setting_flag(f) {
+                Some((name, None)) => cli.settings.set(&name, if f.starts_with("--no-") { "false" } else { "true" })?,
+                Some((name, Some(()))) => {
+                    let v = val(f)?;
+                    cli.settings.set(&name, &v)?;
+                }
+                None => cli.rest.push(a),
+            },
         }
     }
     if let Ok(np) = std::env::var("NIX_PATH") {
@@ -243,42 +212,27 @@ fn parse_cli() -> Result<Cli, String> {
             cli.add_search(&e);
         }
     }
+    cranix_fetchers::set_settings(|f| *f = cli.settings.fetch.clone());
     Ok(cli)
 }
 
-/// Experimental features enabled by the Nix configuration files and
-/// `$NIX_CONFIG`, applied in that order.
-fn configured_features() -> BTreeSet<String> {
-    let mut texts = vec![std::fs::read_to_string("/etc/nix/nix.conf").unwrap_or_default()];
-    let user_conf = match std::env::var("XDG_CONFIG_HOME") {
-        Ok(d) => PathBuf::from(d).join("nix/nix.conf"),
-        Err(_) => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/nix/nix.conf"),
-    };
-    texts.push(std::fs::read_to_string(user_conf).unwrap_or_default());
-    texts.push(std::env::var("NIX_CONFIG").unwrap_or_default());
-    let mut features = BTreeSet::new();
-    for line in texts.iter().flat_map(|t| t.lines()) {
-        let Some((k, v)) = line.split_once('=') else { continue };
-        let v = v.split('#').next().unwrap_or("").split_whitespace().map(String::from);
-        match k.trim() {
-            "experimental-features" => features = v.collect(),
-            "extra-experimental-features" => features.extend(v),
-            _ => {}
+/// The setting a command line flag sets, as Nix derives flags from
+/// settings: `--NAME`/`--no-NAME` for Booleans (no value follows),
+/// `--NAME VALUE` for the others and `--extra-NAME VALUE` for lists.
+fn setting_flag(flag: &str) -> Option<(String, Option<()>)> {
+    let n = flag.strip_prefix("--")?;
+    if let Some(base) = n.strip_prefix("extra-") {
+        if Settings::kind(base) == Some(Kind::List) {
+            return Some((n.to_string(), Some(())));
         }
     }
-    features
-}
-
-/// Parses `nix.conf` syntax: `name = value` lines, `#` comments.
-fn parse_conf(text: &str) -> Vec<(String, String)> {
-    text.lines()
-        .filter_map(|l| {
-            let l = l.split('#').next().unwrap_or("");
-            let (k, v) = l.split_once('=')?;
-            Some((k.trim().to_string(), v.trim().to_string()))
-        })
-        .filter(|(k, _)| !k.is_empty())
-        .collect()
+    match Settings::kind(n) {
+        Some(Kind::Bool) => return Some((n.to_string(), None)),
+        Some(_) => return Some((n.to_string(), Some(()))),
+        None => {}
+    }
+    let base = n.strip_prefix("no-")?;
+    (Settings::kind(base) == Some(Kind::Bool)).then(|| (base.to_string(), None))
 }
 
 fn store_url(cli: &Cli) -> Option<String> {
@@ -344,8 +298,7 @@ fn run() -> Result<(), String> {
             if cli.remote.is_some() {
                 return Err("cranix daemon serves a local store; pass --store DIR".into());
             }
-            let builders = cli.builders.clone().unwrap_or_else(remote::default_builders);
-            remote::cmd_daemon(open_store(&cli)?, &args, build_options(&cli), &builders)
+            remote::cmd_daemon(open_store(&cli)?, &args, &cli.settings)
         }
         "flake" => flake_cmd::cmd_flake(&cli, &args),
         "run" | "shell" | "develop" => flake_cmd::cmd_run_like(&cli, &cmd, &args),
@@ -357,8 +310,7 @@ fn serve(cli: &Cli, args: &[String]) -> Result<(), String> {
     if cli.remote.is_some() {
         return Err("serving needs a local store; pass --store DIR".into());
     }
-    let builders = cli.builders.clone().unwrap_or_else(remote::default_builders);
-    remote::cmd_serve(open_store(cli)?, args, build_options(&cli), &builders)
+    remote::cmd_serve(open_store(cli)?, args, &cli.settings)
 }
 
 struct Target {
@@ -394,10 +346,10 @@ fn new_eval(cli: &Cli) -> Result<Rc<Eval>, String> {
     let store = open_store(cli)?;
     let opts = Options {
         search_path,
-        system: cli.system.clone(),
+        system: cli.system().to_string(),
         pure: cli.pure,
         trace_verbose: false,
-        experimental_features: cli.features.clone(),
+        experimental_features: cli.settings.experimental_features.clone(),
         resolve_search: Some(Box::new(flake_cmd::resolve_search_entry)),
     };
     Ok(Eval::new(store, opts))
@@ -412,12 +364,7 @@ fn render_error(ev: &Eval, cli: &Cli, e: &cranix_eval::EvalError) -> String {
 }
 
 fn build_options(cli: &Cli) -> BuildOptions {
-    BuildOptions {
-        system: cli.system.clone(),
-        ca_derivations: cli.features.contains("ca-derivations"),
-        impure_derivations: cli.features.contains("impure-derivations"),
-        ..Default::default()
-    }
+    cli.settings.build_options()
 }
 
 fn cwd() -> String {
@@ -561,11 +508,6 @@ fn cmd_instantiate(cli: &Cli, args: &[String], build: bool) -> Result<(), String
         return Ok(());
     }
     let mut opts = build_options(cli);
-    for (k, v) in &cli.options {
-        if !opts.set(k, v)? {
-            eprintln!("warning: unknown setting '{k}'");
-        }
-    }
     for (k, v) in &t.opts {
         match k.as_str() {
             "-j" | "--max-jobs" => opts.jobs = v.parse().map_err(|_| "invalid -j value")?,
@@ -584,7 +526,7 @@ fn cmd_instantiate(cli: &Cli, args: &[String], build: bool) -> Result<(), String
                 (s.realise(&ev.store, &paths, &opts)?, Some(s))
             }
             None => {
-                remote::configure_builders(&mut opts, &cli.builders.clone().unwrap_or_else(remote::default_builders))?;
+                remote::configure_builders(&mut opts, &cli.settings.builders)?;
                 (ev.store.realise(&paths, &opts)?, None)
             }
         },
@@ -736,7 +678,7 @@ fn cmd_realisation(cli: &Cli, args: &[String]) -> Result<(), String> {
     }
     let paths: Vec<StorePath> = wanted.iter().map(|(d, _)| d.clone()).collect();
     let built = ev.store.realise(&paths, &build_options(cli))?;
-    let ca = cli.features.contains("ca-derivations");
+    let ca = cli.settings.experimental_features.contains("ca-derivations");
     let mut json = Vec::new();
     let mut out = std::io::stdout().lock();
     for (d, o) in &wanted {

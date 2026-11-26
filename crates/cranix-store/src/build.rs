@@ -135,7 +135,7 @@ impl Default for BuildOptions {
             print_logs: false,
             keep_failed: false,
             system: host_system(),
-            system_features: Vec::new(),
+            system_features: default_system_features(),
             sandbox: SandboxMode::host_default(),
             sandbox_paths: option_env!("CRANIX_SANDBOX_SHELL").map(|sh| vec![format!("/bin/sh={sh}")]).unwrap_or_default(),
             sandbox_fallback: true,
@@ -157,13 +157,7 @@ impl Default for BuildOptions {
     }
 }
 
-fn parse_bool(name: &str, v: &str) -> Result<bool> {
-    match v {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        _ => Err(format!("option '{name}' has invalid value '{v}'; expected 'true' or 'false'")),
-    }
-}
+use crate::settings::parse_bool;
 
 fn parse_num<T: std::str::FromStr>(name: &str, v: &str) -> Result<T> {
     v.parse().map_err(|_| format!("option '{name}' has invalid value '{v}'; expected an integer"))
@@ -218,6 +212,19 @@ impl BuildOptions {
         }
         Ok(true)
     }
+}
+
+/// Nix's default `system-features`.
+fn default_system_features() -> Vec<String> {
+    let mut v: Vec<String> = ["benchmark", "big-parallel", "nixos-test"].map(String::from).to_vec();
+    if cfg!(target_os = "linux") && Path::new("/dev/kvm").exists() {
+        v.push("kvm".into());
+    }
+    if cfg!(target_os = "macos") {
+        v.push("apple-virt".into());
+    }
+    v.sort();
+    v
 }
 
 pub fn host_system() -> String {

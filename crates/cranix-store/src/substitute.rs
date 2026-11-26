@@ -13,7 +13,7 @@ use cranix_core::signing::{PublicKey, SecretKey};
 use cranix_core::{NarInfo, StorePath};
 
 use crate::binary_cache::BinaryCache;
-use crate::config::Settings;
+use crate::settings::Settings;
 use crate::http::HttpClient;
 use crate::narinfo_cache::{self, NarinfoCache};
 use crate::{canonicalise, fsutil, PathInfo, Result, Store};
