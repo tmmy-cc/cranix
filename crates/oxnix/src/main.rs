@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use oxnix_core::hash::{Encoding, Hash, HashAlgo, HashSink};
-use oxnix_core::{nar, FileIngestion, StorePath};
+use oxnix_core::{nar, FileIngestion, OutputKind, StorePath};
 use oxnix_eval::value::{Attrs, Sym};
 use oxnix_eval::{print, Eval, Options, RenderOptions, Value};
 use oxnix_store::binary_cache::{read_secret_keys, BinaryCache};
@@ -34,6 +34,7 @@ commands:
   instantiate [FILE | --expr E] [-A ATTR]       write .drv files, print their paths
   build [FILE | --expr E] [-A ATTR] [-o LINK | --no-link] [-j N] [-L] [--keep-failed]
   show-derivation DRV                            print a derivation as JSON
+  realisation info [FILE | --expr E | DRV^OUT...] [-A ATTR] [--json]
   hash path|file PATH [--type ALGO] [--base16|--base32|--sri]
   hash convert HASH [--to base16|nix32|base64|sri]
   nar dump PATH > out.nar | nar restore DEST < in.nar
@@ -286,6 +287,7 @@ fn run() -> Result<(), String> {
         "instantiate" => cmd_instantiate(&cli, &args, false),
         "build" => cmd_instantiate(&cli, &args, true),
         "show-derivation" => cmd_show_derivation(&cli, &args),
+        "realisation" => cmd_realisation(&cli, &args),
         "hash" => cmd_hash(&args),
         "nar" => cmd_nar(&args),
         "store" if args.first().map(String::as_str) == Some("serve") => serve(&cli, &args[1..]),
@@ -604,13 +606,19 @@ fn cmd_show_derivation(cli: &Cli, args: &[String]) -> Result<(), String> {
             js(k, &mut s);
             s.push_str(":{");
             let mut fields = Vec::new();
-            if !o.hash.is_empty() {
+            let kind = o.kind();
+            if kind == OutputKind::Fixed {
                 fields.push(format!("\"hash\":\"{}\"", o.hash));
+            }
+            if !o.hash_algo.is_empty() {
                 let (m, a) = match o.hash_algo.strip_prefix("r:") {
                     Some(a) => ("nar", a),
                     None => ("flat", o.hash_algo.as_str()),
                 };
                 fields.push(format!("\"hashAlgo\":\"{a}\""));
+                if kind == OutputKind::Impure {
+                    fields.push("\"impure\":true".into());
+                }
                 fields.push(format!("\"method\":\"{m}\""));
             }
             if let Some(p) = &o.path {
@@ -629,6 +637,65 @@ fn cmd_show_derivation(cli: &Cli, args: &[String]) -> Result<(), String> {
     }
     out.push('}');
     println!("{out}");
+    Ok(())
+}
+
+/// `realisation info`: builds the given derivation outputs if needed and
+/// prints their realisations (or, without `ca-derivations`, their paths).
+fn cmd_realisation(cli: &Cli, args: &[String]) -> Result<(), String> {
+    let usage = "usage: oxnix realisation info [FILE | --expr E | DRV^OUT...] [-A ATTR] [--json]";
+    let Some((sub, rest)) = args.split_first() else { return Err(usage.into()) };
+    if sub != "info" {
+        return Err(usage.into());
+    }
+    let ev = new_eval(cli)?;
+    let mut wanted: Vec<(StorePath, String)> = Vec::new();
+    let mut eval_args = Vec::new();
+    for a in rest {
+        match a.split_once('^') {
+            Some((d, outs)) => {
+                let p = ev.store.dir.parse(d)?;
+                let names: Vec<String> = if outs == "*" {
+                    ev.store.read_derivation(&p)?.outputs.keys().cloned().collect()
+                } else {
+                    outs.split(',').map(String::from).collect()
+                };
+                wanted.extend(names.into_iter().map(|o| (p.clone(), o)));
+            }
+            None => eval_args.push(a.clone()),
+        }
+    }
+    let t = parse_target(&eval_args, &[])?;
+    if wanted.is_empty() || t.file.is_some() || t.expr.is_some() {
+        let r = eval_target(&ev, cli, &t).and_then(|v| collect_drvs(&ev, &v, &mut wanted));
+        r.map_err(|e| e.to_string())?;
+    }
+    let paths: Vec<StorePath> = wanted.iter().map(|(d, _)| d.clone()).collect();
+    let built = ev.store.realise(&paths, &build_options(cli))?;
+    let ca = cli.features.contains("ca-derivations");
+    let mut json = Vec::new();
+    let mut out = std::io::stdout().lock();
+    for (d, o) in &wanted {
+        let path = built[d].get(o).ok_or_else(|| format!("derivation '{}' has no output '{o}'", ev.store.dir.print(d)))?;
+        if !ca {
+            json.push(serde_json::json!({ "opaquePath": ev.store.dir.print(path) }));
+            if !t.flags.contains("--json") {
+                writeln!(out, "{}", ev.store.dir.print(path)).ok();
+            }
+            continue;
+        }
+        let drv = ev.store.read_derivation(d)?;
+        let r = ev.store.query_output_realisation(&drv, o)?.ok_or_else(|| {
+            format!("cannot operate on output '{o}' of the unbuilt derivation '{}'", ev.store.dir.print(d))
+        })?;
+        if !t.flags.contains("--json") {
+            writeln!(out, "{} {}", r.id, ev.store.dir.print(&r.out_path)).ok();
+        }
+        json.push(r.to_json());
+    }
+    if t.flags.contains("--json") {
+        writeln!(out, "{}", serde_json::Value::Array(json)).ok();
+    }
     Ok(())
 }
 
