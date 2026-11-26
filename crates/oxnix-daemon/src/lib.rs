@@ -3,4 +3,5 @@
 //! remote builders on top of that client.
 
 pub mod proto;
+pub mod server;
 pub mod wire;
