@@ -42,13 +42,14 @@ commands:
   store sign -k KEYFILE [-r] PATH...            add signatures to local paths
   copy --to URL PATH... | copy --from URL PATH...   copy closures to or from a binary cache
   key generate-secret --key-name NAME | key convert-secret-to-public < KEY
+  store serve [--write]                          serve the store to ssh:// clients (also: --serve)
   daemon [--stdio] [--socket PATH] [--trusted-users U] [--allowed-users U] [--force-trusted|--force-untrusted]
                                                  serve the store to Nix clients
 
 global options:
   --store DIR       use a store rooted at DIR whose store directory is DIR/store
                     (required for building); default: chroot store at ~/.local/share/oxnix
-  --store daemon | unix://SOCKET[?store=DIR] | ssh-ng://[USER@]HOST
+  --store daemon | unix://SOCKET[?store=DIR] | ssh-ng://[USER@]HOST | ssh://[USER@]HOST
                     build through a Nix daemon (evaluation still writes to the default store)
   --builders SPEC   remote builders in Nix's machines format, or @FILE
                     (default: `builders` from nix.conf, else @/etc/nix/machines)
@@ -250,6 +251,8 @@ fn run() -> Result<(), String> {
         "show-derivation" => cmd_show_derivation(&cli, &args),
         "hash" => cmd_hash(&args),
         "nar" => cmd_nar(&args),
+        "store" if args.first().map(String::as_str) == Some("serve") => serve(&cli, &args[1..]),
+        "--serve" => serve(&cli, &args),
         "store" => cmd_store(&cli, &args),
         "copy" => cmd_copy(&cli, &args),
         "key" => cmd_key(&args),
@@ -262,6 +265,14 @@ fn run() -> Result<(), String> {
         }
         c => Err(format!("unknown command '{c}'\n{USAGE}")),
     }
+}
+
+fn serve(cli: &Cli, args: &[String]) -> Result<(), String> {
+    if cli.remote.is_some() {
+        return Err("serving needs a local store; pass --store DIR".into());
+    }
+    let builders = cli.builders.clone().unwrap_or_else(remote::default_builders);
+    remote::cmd_serve(open_store(cli)?, args, BuildOptions { system: cli.system.clone(), ..Default::default() }, &builders)
 }
 
 struct Target {

@@ -19,7 +19,7 @@ bootstrap graph hashes identically.
 | `oxnix-core`   | 1.2k  | Hashes (md5/sha1/sha256/sha512), nix-base32, SRI, store paths and their fingerprints, streaming NAR writer/reader, derivations (ATerm, `hashDerivationModulo`, output paths) |
 | `oxnix-store`  | 2.5k  | Local store, path metadata, `add_text`/`add_path`, reference scanning, closures, GC roots and collection, verification, parallel builder, build sandbox |
 | `oxnix-eval`   | 4.6k  | Lexer/parser, scope-resolving compiler, lazy evaluator, ~110 builtins, `derivationStrict`, printing, JSON |
-| `oxnix-daemon` | 2.5k  | Nix worker protocol (up to 1.37): `oxnix daemon`, a client for `nix-daemon` over Unix sockets and `ssh-ng://`, remote builders |
+| `oxnix-daemon` | 3.5k  | Nix worker protocol (up to 1.37) and serve protocol (2.7): `oxnix daemon`, `oxnix store serve`, clients for `unix://`, `ssh-ng://` and `ssh://` stores, remote builders |
 | `oxnix`        | 0.6k  | CLI |
 
 The core crate has no knowledge of the evaluator or the file system layout of
@@ -131,20 +131,28 @@ and error messages, and the operations real clients use, from
 `QueryPathInfo` and `AddMultipleToStore` to `BuildPathsWithResults`,
 `BuildDerivation`, `NarFromPath` and `CollectGarbage`. Every path a
 connection adds, builds or asks to keep becomes a temporary GC root that
-lives as long as the connection. The daemon's own user and
+lives as long as the connection. Build output streams to the client as
+Nix's build activities, so `nix build -L` shows it live. Clients build
+concurrently; each derivation's outputs are locked while it builds, so a
+second request for it waits and then finds it built. The daemon's own user and
 `--trusted-users` are trusted; other clients may add content-addressed paths
 only (their names are checked against their contents) and cannot build
 input-addressed derivations with `BuildDerivation`.
 
-`--store daemon`, `unix://SOCKET` or `ssh-ng://HOST` builds through a
-daemon: evaluation writes `.drv` files and sources into a local store with
+`oxnix store serve [--write]` (also `oxnix --serve`, matching
+`nix-store --serve`) speaks the serve protocol of `ssh://` stores and
+builders, as client and server. As in Nix, `localhost` in an `ssh://` or
+`ssh-ng://` URI runs the remote command directly, without ssh.
+
+`--store daemon`, `unix://SOCKET`, `ssh-ng://HOST` or `ssh://HOST` builds
+through a daemon (or `nix-store --serve`): evaluation writes `.drv` files and sources into a local store with
 the daemon's store directory, their closure is copied over, and the daemon
 builds and roots the result. Remote builders come from `--builders` (Nix's
 machines format, defaulting to `builders` in `nix.conf` or
 `/etc/nix/machines`); a derivation goes to the least loaded machine that
 supports its system and `requiredSystemFeatures`, its input closure is
 copied there, it is built with `BuildDerivation` and its outputs are copied
-back. Unreachable machines are skipped, and the build falls back to the
+back, with the remote build's output shown as the local build's. Unreachable machines are skipped, and the build falls back to the
 local builder when it can run the derivation.
 
 ## Usage
@@ -188,7 +196,7 @@ target/release/oxnix build tests/build.nix --builders 'ssh-ng://builder@host x86
 Commands: `eval` (`--json`, `--raw`, `--lazy`), `instantiate`, `build`
 (`-o`, `--no-link`, `-j`, `-L`, `--keep-failed`), `show-derivation`,
 `hash path|file|convert`, `nar dump|restore`, and
-`store add|path-info|sign|closure|ls|verify|gc` (`path-info --json -r
+`store add|path-info|sign|closure|ls|verify|gc|serve` (`path-info --json -r
 --closure-size`, also against a cache with `--store URL`), `copy --to URL` and
 `copy --from URL` for `file://` and `http(s)://` caches (uploads with `PUT`), and
 `key generate-secret|convert-secret-to-public`, and `daemon` (`--stdio`,
@@ -214,9 +222,9 @@ string contexts, `derivation`/`derivationStrict` with structured attributes,
 `builtins.path`/`filterSource`, import from derivation, the local store
 operations listed above, binary caches (narinfo reading and writing,
 signatures, substitution and `copy`), the daemon protocol (server and
-client) and remote builders over `ssh-ng://`.
+client) and remote builders over `ssh-ng://` and `ssh://`.
 
-Not implemented: S3 stores, the legacy `ssh://` serve protocol,
+Not implemented: S3 stores,
 flakes, `fetchGit`/`fetchTarball`/`fetchTree`, content-addressed
 (floating) and impure derivations, `fromTOML`, `toXML`, `unsafeGetAttrPos`
 (returns `null`), and profiles/`nix-env`.
@@ -233,7 +241,9 @@ flakes, `fetchGit`/`fetchTarball`/`fetchTree`, content-addressed
   from nixpkgs.
 * `crates/oxnix-daemon/tests/daemon.rs` runs a client against an in-process
   daemon: copying closures, NAR transfer, temporary roots against the
-  collector, untrusted clients, and remote builds through a daemon socket.
+  collector, untrusted clients, remote builds through a daemon socket,
+  concurrent clients building overlapping graphs, and every command of the
+  serve protocol.
 * `tests/build.nix` exercises the builder: parallel leaves, references,
   `passAsFile`, multiple outputs and a fixed-output derivation.
 * `tests/http-cache.sh` uploads a closure to a local HTTP cache (the

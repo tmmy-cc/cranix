@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use oxnix_core::hash::Hash;
 use oxnix_core::{StoreDir, StorePath};
-use oxnix_daemon::client::{ClientOptions, Connection, StoreUri};
+use oxnix_daemon::client::{ClientOptions, LogOptions, StoreUri};
+use oxnix_daemon::remote_store::RemoteStore;
 use oxnix_daemon::proto::DerivedPath;
 use oxnix_daemon::remote_build::RemoteBuilders;
 use oxnix_daemon::server::{Daemon, DaemonConfig};
@@ -61,12 +62,12 @@ pub fn eval_store(uri: &StoreUri) -> Result<Store, String> {
 
 /// A connection to the store named by `--store`.
 pub struct Session {
-    conn: Connection,
+    conn: Box<dyn RemoteStore>,
 }
 
 impl Session {
     pub fn open(uri: &StoreUri) -> Result<Session, String> {
-        Ok(Session { conn: Connection::open(uri)? })
+        Ok(Session { conn: oxnix_daemon::remote_store::open(uri)? })
     }
 
     /// Copies the closures of `drvs` from `eval` and builds them on the
@@ -78,7 +79,7 @@ impl Session {
         opts: &BuildOptions,
     ) -> Result<BTreeMap<StorePath, BTreeMap<String, StorePath>>, String> {
         let c = &mut self.conn;
-        c.log.build_logs = opts.print_logs;
+        c.set_log(LogOptions { build_logs: opts.print_logs, ..Default::default() });
         let copts = ClientOptions {
             keep_failed: opts.keep_failed,
             max_jobs: opts.jobs as u64,
@@ -97,19 +98,25 @@ impl Session {
                 infos.push(eval.query_info(&p)?.ok_or_else(|| format!("path '{}' is not valid", eval.dir.print(&p)))?);
             }
             let nar_of = |info: &oxnix_store::PathInfo, w: &mut dyn Write| oxnix_core::nar::dump(&eval.real_path(&info.path), w);
-            c.add_multiple_to_store(&infos, &nar_of, false)?;
+            c.add_paths(&infos, &nar_of)?;
         }
 
         let targets: Vec<DerivedPath> = drvs.iter().map(|d| DerivedPath::Built { drv: d.clone(), outputs: None }).collect();
         let mut out = BTreeMap::new();
         let mut errors = Vec::new();
-        for (t, res) in c.build_paths_with_results(&targets)? {
+        for (t, res) in c.build_paths(&targets)? {
             let DerivedPath::Built { drv, .. } = t else { continue };
             if !res.status.success() {
                 errors.push(res.error_msg);
                 continue;
             }
-            let outs = res.built_outputs.into_iter().map(|(n, r)| (n, r.out_path)).collect();
+            let mut outs: BTreeMap<String, StorePath> = res.built_outputs.into_iter().map(|(n, r)| (n, r.out_path)).collect();
+            // The serve protocol reports no outputs; they follow from the
+            // derivation.
+            if outs.is_empty() {
+                let d = eval.read_derivation(&drv)?;
+                outs = d.outputs.into_iter().filter_map(|(n, o)| Some((n, o.path?))).collect();
+            }
             out.insert(drv, outs);
         }
         if !errors.is_empty() {
@@ -122,6 +129,20 @@ impl Session {
         let abs = std::path::absolute(link).map_err(|e| format!("resolving '{}': {e}", link.display()))?;
         self.conn.add_indirect_root(&abs.to_string_lossy())
     }
+}
+
+/// `oxnix store serve [--write]`, also reachable as `oxnix --serve [--write]`
+/// so that `ssh://` clients can run it in place of `nix-store`.
+pub fn cmd_serve(store: Store, args: &[String], mut opts: BuildOptions, builders: &str) -> Result<(), String> {
+    let mut write = false;
+    for a in args {
+        match a.as_str() {
+            "--write" => write = true,
+            a => return Err(format!("unknown serve option '{a}'")),
+        }
+    }
+    configure_builders(&mut opts, builders)?;
+    oxnix_daemon::serve::serve(&store, std::io::stdin().lock(), std::io::stdout().lock(), write, &opts)
 }
 
 /// `oxnix daemon [--stdio] [--socket PATH] [--trusted-users U] [--allowed-users U] [--force-trusted|--force-untrusted]`
