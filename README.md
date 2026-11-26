@@ -1,4 +1,18 @@
-# cranix
+<p align="center">
+  <img src="site/favicon.svg" alt="cranix logo: a crane lifting a package" width="128" height="128">
+</p>
+
+<h1 align="center">cranix</h1>
+
+<p align="center">
+  <strong>The Nix package manager, rebuilt in Rust with the EU&nbsp;CRA in mind.</strong>
+</p>
+
+<p align="center">
+  <a href="https://cranix.cc">cranix.cc</a> ·
+  <a href="LICENSE">LGPL-2.1-or-later</a> ·
+  bit-compatible with Nix 2.24
+</p>
 
 A Rust implementation of the Nix package manager: the Nix language, store
 derivations, the NAR format, a local store with garbage collection, and a
