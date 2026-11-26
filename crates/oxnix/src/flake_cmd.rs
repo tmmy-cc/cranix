@@ -242,6 +242,7 @@ fn realise_opt(ev: &Eval, cli: &Cli, drvs: &[(StorePath, String)], best_effort: 
     Ok(paths)
 }
 
+/// `%F %T` of a timestamp in UTC, or in local time like `localtime(3)`.
 fn date(t: u64, local: bool) -> String {
     let secs = if local {
         let tt = t as libc::time_t;
@@ -358,81 +359,259 @@ fn metadata(ev: &Eval, lf: &LockedFlake, json: bool) -> R<String> {
     Ok(s.trim_end().to_string())
 }
 
-fn describe_output(ev: &Eval, v: &Value) -> R<String> {
-    let v = ev.force(v)?;
-    match &v {
-        Value::Attrs(a) if ev.is_derivation(a)? => {
-            let name = match a.get_str("name") {
-                Some(n) => ev.force_plain_str(n)?,
-                None => "?".into(),
-            };
-            Ok(format!("package '{name}'"))
+struct Show<'a> {
+    ev: &'a Eval,
+    system: &'a str,
+    all_systems: bool,
+    legacy: bool,
+    json: bool,
+    color: bool,
+}
+
+const TREE_CONN: &str = "├───";
+const TREE_LAST: &str = "└───";
+const TREE_LINE: &str = "│   ";
+const TREE_NULL: &str = "    ";
+
+impl Show<'_> {
+    fn c(&self, code: &str) -> &'static str {
+        if !self.color {
+            return "";
         }
-        Value::Attrs(a) if matches!(a.get_str("type").map(|t| ev.force(t)), Some(Ok(Value::Str(ref s))) if s.s == "app") => Ok("app".into()),
-        Value::Lambda(_) | Value::PrimOp(_) => Ok("function".into()),
-        v => Ok(v.describe().trim_start_matches("a ").trim_start_matches("an ").to_string()),
+        match code {
+            "green" => "\x1b[32;1m",
+            "bold" => "\x1b[1m",
+            "warn" => "\x1b[35;1m",
+            _ => "\x1b[0m",
+        }
+    }
+
+    /// Lines are written as they are produced, so an evaluation error
+    /// leaves the tree printed so far, as in Nix.
+    fn line(&mut self, s: String) {
+        if !self.json {
+            let mut o = std::io::stdout().lock();
+            let _ = writeln!(o, "{s}");
+            let _ = o.flush();
+        }
+    }
+
+    fn omitted(&mut self, header: &str, path: &[String], flag: &str) {
+        if self.json {
+            oxnix_fetchers::warn(format!("{} omitted (use '{flag}' to show)", path.join(".")));
+        } else {
+            let s = format!("{header} {}omitted{} (use '{flag}' to show)", self.c("warn"), self.c("normal"));
+            self.line(s);
+        }
+    }
+
+    fn attrs(&self, v: &Value) -> R<Rc<oxnix_eval::value::Attrs>> {
+        self.ev.force_attrs(v)
+    }
+
+    fn is_drv(&self, v: &Value) -> R<bool> {
+        match self.ev.force(v)? {
+            Value::Attrs(a) => self.ev.is_derivation(&a),
+            _ => Ok(false),
+        }
+    }
+
+    fn get_str(&self, v: &Value, k: &str) -> R<String> {
+        let a = self.attrs(v)?;
+        match a.get_str(k) {
+            Some(x) => self.ev.force_plain_str(x),
+            None => err(format!("attribute '{k}' missing")),
+        }
+    }
+
+    fn has_content(&self, v: &Value, path: &[String]) -> bool {
+        let r: R<bool> = (|| {
+            let p0 = path[0].as_str();
+            let deep = matches!(p0, "apps" | "checks" | "devShells" | "legacyPackages" | "packages") && (path.len() == 1 || path.len() == 2);
+            let shallow = path.len() == 1 && matches!(p0, "formatter" | "nixosConfigurations" | "nixosModules" | "overlays");
+            if deep || shallow {
+                for (k, x) in self.attrs(v)?.iter() {
+                    let mut p2 = path.to_vec();
+                    p2.push(k.as_str().to_string());
+                    if self.has_content(x, &p2) {
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            }
+            Ok(true)
+        })();
+        r.unwrap_or(true)
+    }
+
+    fn show_drv(&mut self, v: &Value, path: &[String], header: &str, j: &mut serde_json::Map<String, serde_json::Value>) -> R<()> {
+        let name = self.get_str(v, "name")?;
+        if self.json {
+            let a = self.attrs(v)?;
+            let mut desc = None;
+            if let Some(m) = a.get_str("meta") {
+                if let Value::Attrs(m) = self.ev.force(m)? {
+                    if let Some(d) = m.get_str("description") {
+                        desc = Some(self.ev.force_plain_str(d)?);
+                    }
+                }
+            }
+            j.insert("type".into(), "derivation".into());
+            j.insert("name".into(), name.into());
+            if let Some(d) = desc {
+                j.insert("description".into(), d.into());
+            }
+        } else {
+            let p0 = path.first().map_or("", |s| s.as_str());
+            let what = if (path.len() == 2 && p0 == "devShell") || (path.len() >= 2 && p0 == "devShells") {
+                "development environment"
+            } else if (path.len() == 3 && p0 == "checks") || (!path.is_empty() && p0 == "hydraJobs") {
+                "derivation"
+            } else {
+                "package"
+            };
+            self.line(format!("{header}: {what} '{name}'"));
+        }
+        Ok(())
+    }
+
+    fn recurse(&mut self, v: &Value, path: &[String], header: &str, next: &str, j: &mut serde_json::Map<String, serde_json::Value>) -> R<()> {
+        self.line(header.to_string());
+        let a = self.attrs(v)?;
+        let kids: Vec<(String, Value)> = a
+            .iter()
+            .filter(|(k, x)| {
+                let mut p2 = path.to_vec();
+                p2.push(k.as_str().to_string());
+                self.has_content(x, &p2)
+            })
+            .map(|(k, x)| (k.as_str().to_string(), x.clone()))
+            .collect();
+        let n = kids.len();
+        for (i, (k, x)) in kids.into_iter().enumerate() {
+            let last = i + 1 == n;
+            let mut p2 = path.to_vec();
+            p2.push(k.clone());
+            let h = format!("{}{next}{}{}{}{k}{}", self.c("green"), if last { TREE_LAST } else { TREE_CONN }, self.c("normal"), self.c("bold"), self.c("normal"));
+            let nx = format!("{next}{}", if last { TREE_NULL } else { TREE_LINE });
+            let j2 = self.visit(&x, &p2, &h, &nx)?;
+            if self.json {
+                j.insert(k, j2);
+            }
+        }
+        Ok(())
+    }
+
+    fn visit(&mut self, v: &Value, path: &[String], header: &str, next: &str) -> R<serde_json::Value> {
+        let mut j = serde_json::Map::new();
+        let r = self.visit_inner(v, path, header, next, &mut j);
+        if let Err(e) = r {
+            if !(path.first().is_some_and(|p| p == "legacyPackages")) {
+                return Err(e);
+            }
+        }
+        Ok(serde_json::Value::Object(j))
+    }
+
+    fn visit_inner(&mut self, v: &Value, path: &[String], header: &str, next: &str, j: &mut serde_json::Map<String, serde_json::Value>) -> R<()> {
+        let p0 = path.first().map_or("", |s| s.as_str());
+        let len = path.len();
+        let other_system = len >= 2 && !self.all_systems && path[1] != self.system;
+        if len == 0
+            || (len == 1
+                && matches!(p0, "defaultPackage" | "devShell" | "formatter" | "nixosConfigurations" | "nixosModules" | "defaultApp" | "templates" | "overlays"))
+            || ((len == 1 || len == 2) && matches!(p0, "checks" | "packages" | "devShells" | "apps"))
+        {
+            self.recurse(v, path, header, next, j)
+        } else if (len == 2 && matches!(p0, "defaultPackage" | "devShell" | "formatter")) || (len == 3 && matches!(p0, "checks" | "packages" | "devShells")) {
+            if other_system {
+                self.omitted(header, path, "--all-systems");
+                Ok(())
+            } else if self.is_drv(v)? {
+                self.show_drv(v, path, header, j)
+            } else {
+                err("expected a derivation")
+            }
+        } else if len > 0 && p0 == "hydraJobs" {
+            if self.is_drv(v)? {
+                self.show_drv(v, path, header, j)
+            } else {
+                self.recurse(v, path, header, next, j)
+            }
+        } else if len > 0 && p0 == "legacyPackages" {
+            if len == 1 {
+                self.recurse(v, path, header, next, j)
+            } else if !self.legacy {
+                self.omitted(header, path, "--legacy");
+                Ok(())
+            } else if other_system {
+                self.omitted(header, path, "--all-systems");
+                Ok(())
+            } else if self.is_drv(v)? {
+                self.show_drv(v, path, header, j)
+            } else if len <= 2 {
+                self.recurse(v, path, header, next, j)
+            } else {
+                Ok(())
+            }
+        } else if (len == 2 && p0 == "defaultApp") || (len == 3 && p0 == "apps") {
+            let a = self.attrs(v)?;
+            let is_app = match a.get_str("type") {
+                Some(t) => self.ev.force_plain_str(t)? == "app",
+                None => false,
+            };
+            if !is_app {
+                return err("not an app definition");
+            }
+            if self.json {
+                j.insert("type".into(), "app".into());
+            } else {
+                self.line(format!("{header}: app"));
+            }
+            Ok(())
+        } else if (len == 1 && p0 == "defaultTemplate") || (len == 2 && p0 == "templates") {
+            let d = self.get_str(v, "description")?;
+            if self.json {
+                j.insert("type".into(), "template".into());
+                j.insert("description".into(), d.into());
+            } else {
+                let s = format!("{header}: template: {}{d}{}", self.c("bold"), self.c("normal"));
+                self.line(s);
+            }
+            Ok(())
+        } else {
+            let (ty, desc) = if (len == 1 && p0 == "overlay") || (len == 2 && p0 == "overlays") {
+                ("nixpkgs-overlay", "Nixpkgs overlay")
+            } else if len == 2 && p0 == "nixosConfigurations" {
+                ("nixos-configuration", "NixOS configuration")
+            } else if (len == 1 && p0 == "nixosModule") || (len == 2 && p0 == "nixosModules") {
+                ("nixos-module", "NixOS module")
+            } else {
+                ("unknown", "unknown")
+            };
+            if self.json {
+                j.insert("type".into(), ty.into());
+            } else {
+                let s = format!("{header}: {}{desc}{}", self.c("warn"), self.c("normal"));
+                self.line(s);
+            }
+            Ok(())
+        }
     }
 }
 
-fn show(ev: &Eval, cli: &Cli, outputs: &Value, all_systems: bool, legacy: bool) -> R<String> {
-    let per_system = ["packages", "legacyPackages", "devShells", "apps", "checks", "formatter", "defaultPackage", "devShell", "defaultApp"];
-    let mut s = String::new();
-    let top = ev.force_attrs(outputs)?;
-    let names: Vec<(Sym, Value)> = top
-        .iter()
-        .filter(|(k, _)| !matches!(k.as_str(), "inputs" | "outputs" | "sourceInfo" | "outPath" | "_type" | "self")
-            && !["narHash", "lastModified", "lastModifiedDate", "rev", "shortRev", "revCount", "submodules", "dirtyRev", "dirtyShortRev"].contains(&k.as_str()))
-        .cloned()
-        .collect();
-    let outs_attrs = match top.get_str("outputs") {
-        Some(o) => ev.force_attrs(o)?,
-        None => top.clone(),
+/// `flake show`: the tree (or JSON) of a flake's outputs, as Nix prints it.
+fn show(ev: &Eval, cli: &Cli, lf: &LockedFlake, outputs: &Value, all_systems: bool, legacy: bool, json: bool) -> R<String> {
+    // Nix writes the colours regardless of where stdout goes.
+    let color = !json;
+    let mut s = Show { ev, system: &cli.system, all_systems, legacy, json, color };
+    let outs = match ev.force_attrs(outputs)?.get_str("outputs") {
+        Some(o) => o.clone(),
+        None => outputs.clone(),
     };
-    let names: Vec<(Sym, Value)> = names.into_iter().filter(|(k, _)| outs_attrs.get(k).is_some()).collect();
-    for (i, (k, v)) in names.iter().enumerate() {
-        let last = i + 1 == names.len();
-        s.push_str(&format!("{}{}\n", if last { "└───" } else { "├───" }, k.as_str()));
-        let pre = if last { "    " } else { "│   " };
-        if !per_system.contains(&k.as_str()) {
-            if let Value::Attrs(a) = ev.force(v)? {
-                if !ev.is_derivation(&a)? {
-                    let n = a.len();
-                    for (j, (k2, v2)) in a.iter().enumerate() {
-                        let b = if j + 1 == n { "└───" } else { "├───" };
-                        s.push_str(&format!("{pre}{b}{}: {}\n", k2.as_str(), describe_output(ev, v2)?));
-                    }
-                }
-            }
-            continue;
-        }
-        let systems = ev.force_attrs(v)?;
-        let n = systems.len();
-        for (j, (sys, sv)) in systems.iter().enumerate() {
-            let b = if j + 1 == n { "└───" } else { "├───" };
-            let pre2 = format!("{pre}{}", if j + 1 == n { "    " } else { "│   " });
-            if !all_systems && sys.as_str() != cli.system {
-                s.push_str(&format!("{pre}{b}{} omitted (use '--all-systems' to show)\n", sys.as_str()));
-                continue;
-            }
-            if k.as_str() == "legacyPackages" && !legacy {
-                s.push_str(&format!("{pre}{b}{} omitted (use '--legacy' to show)\n", sys.as_str()));
-                continue;
-            }
-            let sv = ev.force(sv)?;
-            match &sv {
-                Value::Attrs(a) if !ev.is_derivation(a)? && !matches!(k.as_str(), "formatter" | "defaultPackage" | "devShell" | "defaultApp") => {
-                    s.push_str(&format!("{pre}{b}{}\n", sys.as_str()));
-                    let m = a.len();
-                    for (l, (k3, v3)) in a.iter().enumerate() {
-                        let b3 = if l + 1 == m { "└───" } else { "├───" };
-                        s.push_str(&format!("{pre2}{b3}{}: {}\n", k3.as_str(), describe_output(ev, v3)?));
-                    }
-                }
-                _ => s.push_str(&format!("{pre}{b}{}: {}\n", sys.as_str(), describe_output(ev, &sv)?)),
-            }
-        }
-    }
-    Ok(s)
+    let header = format!("{}{}{}", s.c("bold"), lf.flake.locked_ref.to_string(), s.c("normal"));
+    let j = s.visit(&outs, &[], &header, "")?;
+    Ok(if json { format!("{j}\n") } else { String::new() })
 }
 
 fn check(ev: &Eval, cli: &Cli, outputs: &Value, build: bool) -> R<()> {
@@ -563,15 +742,7 @@ pub fn cmd_flake(cli: &Cli, args: &[String]) -> Result<(), String> {
                 let r = flake_ref_arg(&positional).or_else(err)?;
                 let lf = flake::lock_flake(&ev, &r, &flags.lock)?;
                 let out = flake::call_flake(&ev, &lf)?;
-                if has("--json") {
-                    let mut s = String::new();
-                    let shown = show(&ev, cli, &out, has("--all-systems"), has("--legacy"))?;
-                    oxnix_eval::print::json_string(&shown, &mut s);
-                    println!("{s}");
-                } else {
-                    println!("{}", lf.flake.locked_ref.to_string());
-                    print!("{}", show(&ev, cli, &out, has("--all-systems"), has("--legacy"))?);
-                }
+                print!("{}", show(&ev, cli, &lf, &out, has("--all-systems"), has("--legacy"), has("--json"))?);
             }
             "check" => {
                 let r = flake_ref_arg(&positional).or_else(err)?;

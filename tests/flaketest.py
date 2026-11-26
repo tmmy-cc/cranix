@@ -10,7 +10,9 @@ top-level directory and an empty directory) and checks that
 * a flake with a `follows` input locks to the same flake.lock as
   `nix flake lock`, which `nix flake metadata` then leaves unchanged,
 * flake outputs, `self` and `getFlake` attributes and `flake metadata
-  --json` agree,
+  --json` agree, and `flake show` (text and JSON, with `--all-systems` and
+  `--legacy`) and the `flake metadata` text (in several time zones) print
+  the same output,
 * `eval nixpkgs#hello.drvPath` agrees.
 
 With --network it also fetches from GitHub (remote Git, shallow Git,
@@ -218,6 +220,71 @@ def flake_tests(tmp):
     check("getFlake", nix and json.loads(nix), ox and json.loads(ox))
 
 
+SHOW_FLAKE = """{
+  description = "show test";
+  outputs = { self }: let
+    drv = system: name: derivation { inherit name system; builder = "/bin/sh"; args = [ "-c" "echo > $out" ]; }
+      // { meta.description = "the ${name}"; };
+  in {
+    lib.add = a: b: a + b;
+    lib.nested.x = 1;
+    overlays.default = final: prev: { };
+    overlays.empty = { };
+    overlay = final: prev: { };
+    nixosModules.foo = { ... }: { };
+    nixosModule = { ... }: { };
+    nixosConfigurations.box = { config = { }; };
+    custom = { a = 1; b = "x"; };
+    answer = 42;
+    packages.SYS.default = drv "SYS" "hello";
+    packages.SYS.other = drv "SYS" "other";
+    packages.x86_64-linux.default = drv "x86_64-linux" "hello";
+    packages.riscv64-linux = { };
+    devShells.SYS.default = drv "SYS" "shell";
+    checks.SYS.t = drv "SYS" "check";
+    apps.SYS.default = { type = "app"; program = "/bin/sh"; };
+    formatter.SYS = drv "SYS" "fmt";
+    legacyPackages.SYS = { hello = drv "SYS" "lhello"; sub.x = drv "SYS" "x"; broken = throw "no"; };
+    templates.default = { path = ./.; description = "a template"; };
+    defaultTemplate = { path = ./.; description = "old template"; };
+    hydraJobs.build.SYS = drv "SYS" "job";
+    defaultPackage.SYS = drv "SYS" "dp";
+    devShell.SYS = drv "SYS" "ds";
+  };
+}
+"""
+
+
+def strip_ansi(s):
+    import re
+    return re.sub(r"\x1b\[[0-9;]*[mK]", "", s)
+
+
+def show_tests(tmp):
+    system = subprocess.run(["nix", "eval", "--impure", "--raw", "--expr", "builtins.currentSystem"],
+                            capture_output=True, text=True).stdout
+    d = os.path.join(tmp, "show")
+    os.makedirs(d)
+    write_flake(d, SHOW_FLAKE.replace("SYS", system))
+    ref = f"path:{d}"
+    flags = [[], ["--all-systems"], ["--legacy"], ["--legacy", "--all-systems"],
+             ["--json"], ["--json", "--all-systems"], ["--json", "--legacy", "--all-systems"]]
+    for f in flags:
+        n = subprocess.run(["nix", "flake", "show", ref] + f, capture_output=True, text=True, cwd=tmp)
+        o = subprocess.run([oxnix, "flake", "show", ref] + f, capture_output=True, text=True, cwd=tmp)
+        nerr = [l for l in strip_ansi(n.stderr).splitlines() if l.strip() and not l.startswith("evaluating")]
+        oerr = [l for l in strip_ansi(o.stderr).splitlines() if l.strip()]
+        name = "flake show " + " ".join(f)
+        check(name + " (stdout)", n.stdout, o.stdout)
+        check(name + " (stderr)", nerr, oerr)
+        check(name + " (status)", n.returncode, o.returncode)
+    for tz in ["UTC", "Asia/Tokyo", "America/New_York"]:
+        env = dict(os.environ, TZ=tz)
+        n = subprocess.run(["nix", "flake", "metadata", ref], capture_output=True, text=True, env=env)
+        o = subprocess.run([oxnix, "flake", "metadata", ref], capture_output=True, text=True, env=env)
+        check(f"flake metadata TZ={tz}", n.stdout, o.stdout)
+
+
 def nixpkgs_tests(tmp):
     nix, _ = run(["nix", "eval", "nixpkgs#hello.drvPath"], tmp)
     if nix is None:
@@ -263,6 +330,7 @@ def main():
         tmp = os.path.realpath(tmp)
         fetcher_tests(tmp)
         flake_tests(tmp)
+        show_tests(tmp)
         nixpkgs_tests(tmp)
         if network:
             network_tests(tmp)
