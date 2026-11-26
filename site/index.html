@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>cranix: the Nix package manager, rebuilt in Rust with the EU CRA in mind</title>
+    <meta name="description" content="cranix is a from-scratch Rust implementation of the Nix package manager, bit-compatible with Nix 2.24, with less memory and tooling for the EU Cyber Resilience Act.">
+    <meta name="theme-color" content="#f7f6f2" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#121315" media="(prefers-color-scheme: dark)">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="cranix: the Nix package manager, rebuilt in Rust with the EU CRA in mind">
+    <meta property="og:description" content="A from-scratch Rust implementation of Nix, bit-compatible with Nix 2.24 and built for the EU Cyber Resilience Act.">
+    <meta property="og:image" content="assets/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="The cranix logo, a crane lifting a package, next to the words cranix: the Nix package manager, rebuilt in Rust with the EU CRA in mind">
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="assets/style.css">
+    <script>document.documentElement.classList.add('js');</script>
+    <script src="assets/main.js" defer></script>
+</head>
+<body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+        <div class="container site-header-inner">
+            <a class="brand" href="./" aria-label="cranix home">
+                <svg class="logo" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+                    <path class="ink-line" d="M25 37V58M29.5 37l3.5 21M19 59.5h18" fill="none" stroke-width="3" stroke-linecap="round"/>
+                    <path class="plumage" d="M10 35c4-8 14-11 24-11l5 4c-5 6-13 10-21 10z"/>
+                    <path class="ink" d="M7 43c1-7 5-11 11-12 1 5-3 10-11 12z"/>
+                    <path class="ink-line" d="M35.5 27 45 11.5" fill="none" stroke-width="5" stroke-linecap="round"/>
+                    <path class="stripe" d="M37.2 27.4 46.2 12.6" fill="none" stroke-width="1.6" stroke-linecap="round"/>
+                    <circle class="ink" cx="45.5" cy="10" r="3.8"/>
+                    <circle class="crown" cx="44.6" cy="6.9" r="1.8"/>
+                    <circle class="eye" cx="46.8" cy="9.5" r="1"/>
+                    <path class="ink" d="M48.6 8.4 61.5 10.8 48.7 12z"/>
+                    <path class="ink-line" d="M58.5 11v9.5" fill="none" stroke-width="1.2"/>
+                    <path d="M58.5 20.5 62.5 22.8 58.5 25.1 54.5 22.8z" fill="#f6cf4a"/>
+                    <path d="M54.5 22.8 58.5 25.1V29.8L54.5 27.5z" fill="#e2a90a"/>
+                    <path d="M62.5 22.8 58.5 25.1V29.8L62.5 27.5z" fill="#b98608"/>
+                </svg>
+                cranix
+            </a>
+            <nav class="site-nav" aria-label="Main">
+                <a class="nav-optional" href="#design">Design</a>
+                <a href="#features">Features</a>
+                <a class="nav-optional" href="#performance">Performance</a>
+                <a href="#install">Install</a>
+                <a class="button button-primary button-small" href="https://github.com/tmmy-cc/cranix">GitHub</a>
+            </nav>
+        </div>
+    </header>
+
+    <main id="main">
+        <section class="hero" aria-labelledby="hero-title">
+            <div class="hero-sky" aria-hidden="true">
+                <div class="hero-sun parallax" style="--depth: 0.35"></div>
+                <div class="parallax" style="--depth: 0.18; position: absolute; inset: 0;">
+                    <span class="hero-cloud hero-cloud-1"></span>
+                    <span class="hero-cloud hero-cloud-2"></span>
+                    <span class="hero-cloud hero-cloud-3"></span>
+                    <span class="hero-cloud hero-cloud-4"></span>
+                </div>
+                <div class="flight parallax-free">
+                    <div class="flight-bob">
+                        <svg class="logo" viewBox="0 0 200 70" focusable="false">
+                            <path class="wing wing-far plumage" d="M96 45C98 30 94 17 86 4l24 11c7 9 9 20 8 30z" opacity="0.55"/>
+                            <path class="ink-line" d="M76 49 18 53M76 52 20 58" fill="none" stroke-width="2.2" stroke-linecap="round"/>
+                            <path class="ink" d="M72 48c-8 2-14 7-18 12 10-1 18-4 24-8z"/>
+                            <ellipse class="plumage" cx="92" cy="48" rx="24" ry="7.5"/>
+                            <path class="ink-line" d="M112 46 158 39" fill="none" stroke-width="4.5" stroke-linecap="round"/>
+                            <circle class="ink" cx="162" cy="38" r="4.2"/>
+                            <circle class="crown" cx="161" cy="34.6" r="1.9"/>
+                            <path class="ink" d="M165 36.4 184 39 165 40.8z"/>
+                            <g class="wing">
+                                <path class="plumage" d="M84 46C86 30 80 16 70 4l26 10c7 10 9 21 8 32z"/>
+                                <path class="ink" d="M70 4 96 14 90 21 77 14z"/>
+                            </g>
+                        </svg>
+                    </div>
+                </div>
+                <div class="flight flight-flock-2">
+                    <div class="flight-bob">
+                        <svg class="logo" viewBox="0 0 200 70" focusable="false">
+                            <path class="ink-line" d="M76 49 18 53M76 52 20 58" fill="none" stroke-width="2.2" stroke-linecap="round"/>
+                            <ellipse class="plumage" cx="92" cy="48" rx="24" ry="7.5"/>
+                            <path class="ink-line" d="M112 46 158 39" fill="none" stroke-width="4.5" stroke-linecap="round"/>
+                            <circle class="ink" cx="162" cy="38" r="4.2"/>
+                            <path class="ink" d="M165 36.4 184 39 165 40.8z"/>
+                            <g class="wing">
+                                <path class="plumage" d="M84 46C86 30 80 16 70 4l26 10c7 10 9 21 8 32z"/>
+                                <path class="ink" d="M70 4 96 14 90 21 77 14z"/>
+                            </g>
+                        </svg>
+                    </div>
+                </div>
+                <svg class="hero-reeds parallax" style="--depth: -0.08" viewBox="0 0 1200 110" preserveAspectRatio="none" focusable="false">
+                    <path d="M0 110V78c120-18 240-30 380-22s250 26 420 12 260-36 400-30v72z" fill="currentColor" opacity="0.55"/>
+                    <path d="M0 110V92c160-10 300-14 460-6s300 16 460 6 200-12 280-10v28z" fill="currentColor"/>
+                </svg>
+            </div>
+
+            <div class="container hero-content">
+                <div class="hero-intro">
+                    <p class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span>Open source · LGPL-2.1-or-later</p>
+                    <h1 id="hero-title">The Nix package manager, rebuilt in Rust <span class="highlight">with the <abbr title="EU Cyber Resilience Act">EU&nbsp;CRA</abbr> in mind.</span></h1>
+                    <p class="hero-lead">cranix is a from-scratch implementation of Nix: the language, the store and the builder. It is bit-compatible with Nix 2.24, so the same expression gives the same <code>.drv</code> path, and it is built to make software supply chains easy to account for.</p>
+                    <div class="hero-actions">
+                        <a class="button button-primary" href="https://github.com/tmmy-cc/cranix">
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 18c-4 1.3-4-2-6-2.5m12 5v-3.4a3 3 0 0 0-.8-2.3c2.7-.3 5.5-1.3 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.3 4.3 0 0 0-.1-3.2s-1-.3-3.4 1.3a11.6 11.6 0 0 0-6 0C6.5 2.1 5.5 2.4 5.5 2.4a4.3 4.3 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 8.8c0 4.7 2.8 5.7 5.5 6a3 3 0 0 0-.8 2.3V21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            tmmy-cc/cranix on GitHub
+                        </a>
+                        <a class="button button-secondary" href="#install">Get started</a>
+                    </div>
+                </div>
+                <div class="hero-mark" aria-hidden="true">
+                    <svg class="logo" viewBox="0 0 64 64" focusable="false">
+                        <path class="ink-line" d="M25 37V58M29.5 37l3.5 21M19 59.5h18" fill="none" stroke-width="3" stroke-linecap="round"/>
+                        <path class="plumage" d="M10 35c4-8 14-11 24-11l5 4c-5 6-13 10-21 10z"/>
+                        <path class="ink" d="M7 43c1-7 5-11 11-12 1 5-3 10-11 12z"/>
+                        <path class="ink-line" d="M35.5 27 45 11.5" fill="none" stroke-width="5" stroke-linecap="round"/>
+                        <path class="stripe" d="M37.2 27.4 46.2 12.6" fill="none" stroke-width="1.6" stroke-linecap="round"/>
+                        <circle class="ink" cx="45.5" cy="10" r="3.8"/>
+                        <circle class="crown" cx="44.6" cy="6.9" r="1.8"/>
+                        <circle class="eye" cx="46.8" cy="9.5" r="1"/>
+                        <g class="load">
+                            <path class="ink-line" d="M58.5 11v9.5" fill="none" stroke-width="1.2"/>
+                            <path d="M58.5 20.5 62.5 22.8 58.5 25.1 54.5 22.8z" fill="#f6cf4a"/>
+                            <path d="M54.5 22.8 58.5 25.1V29.8L54.5 27.5z" fill="#e2a90a"/>
+                            <path d="M62.5 22.8 58.5 25.1V29.8L62.5 27.5z" fill="#b98608"/>
+                        </g>
+                        <path class="ink" d="M48.6 8.4 61.5 10.8 48.7 12z"/>
+                    </svg>
+                </div>
+            </div>
+        </section>
+
+        <section class="section" aria-label="Key numbers">
+            <div class="container">
+                <ul class="stats" data-stagger>
+                    <li class="stat reveal">
+                        <span class="stat-value">bit-identical</span>
+                        <span class="stat-label"><code>.drv</code> paths to Nix 2.24, down to the darwin stdenv bootstrap</span>
+                    </li>
+                    <li class="stat reveal">
+                        <span class="stat-value">−23&#8202;%</span>
+                        <span class="stat-label">peak memory evaluating <code>hello</code> from nixpkgs (157 vs. 205 MiB)</span>
+                    </li>
+                    <li class="stat reveal">
+                        <span class="stat-value">0.25&#8202;s</span>
+                        <span class="stat-label">to evaluate <code>hello.drvPath</code>, on par with Nix at 0.29&#8202;s</span>
+                    </li>
+                    <li class="stat reveal">
+                        <span class="stat-value">~110</span>
+                        <span class="stat-label">builtins, checked against Nix by a differential test suite</span>
+                    </li>
+                </ul>
+            </div>
+        </section>
+
+        <section id="name" class="section section-alt" aria-labelledby="name-title">
+            <div class="container">
+                <div class="section-header reveal">
+                    <p class="section-kicker">The name</p>
+                    <h2 id="name-title">A crane that lifts packages</h2>
+                    <p>cranix brings together two things: compliance work under Europe’s new product security law, and a bird that has carried symbolism for a very long time.</p>
+                </div>
+                <div class="name-grid" data-stagger>
+                    <article class="name-card reveal">
+                        <span class="name-card-letters">CRA · nix</span>
+                        <h3>The Cyber Resilience Act</h3>
+                        <p>The EU Cyber Resilience Act asks makers of software to know exactly what goes into a product, to handle vulnerabilities and to document both. A Nix closure already is an exact, hash-pinned bill of materials. cranix is built to turn that into the reports the regulation asks for.</p>
+                    </article>
+                    <article class="name-card reveal">
+                        <span class="name-card-letters">Kranich</span>
+                        <h3>The common crane</h3>
+                        <p><i lang="de">Kranich</i> is German for crane. The grey bird with the red crown gave its name to the machine that lifts loads into place, and the logo is both: a crane with a long beak like a jib, lifting a package.</p>
+                    </article>
+                </div>
+            </div>
+        </section>
+
+        <section id="design" class="section" aria-labelledby="design-title">
+            <div class="container">
+                <div class="section-header reveal">
+                    <p class="section-kicker">Design</p>
+                    <h2 id="design-title">Written against Nix’s behaviour, shaped by Rust</h2>
+                    <p>cranix follows the specification of what Nix does: store path fingerprints, ATerm, NAR and the evaluation semantics. It is not a line-by-line translation of the C++ code. Small library crates hold the formats, so other tools can hash, read NARs and handle derivations without pulling in an evaluator.</p>
+                </div>
+                <div class="design-grid" data-stagger>
+                    <article class="design-card reveal">
+                        <h3>Evaluator</h3>
+                        <p>A hand-written parser feeds a compile pass that resolves every statically bound variable to a <code>(depth, slot)</code> pair, so undefined variables are reported before evaluation starts. Values are 16 bytes; attribute sets are sorted vectors of interned symbols, and <code>a // b</code> on a large <code>a</code> is a layer instead of a copy.</p>
+                    </article>
+                    <article class="design-card reveal">
+                        <h3>Store</h3>
+                        <p>A store has a logical directory, the one baked into hashes, and a physical one. By default objects live in your home directory while paths stay <code>/nix/store</code>, so results match a regular Nix install without root. Metadata is one small file per path, written atomically.</p>
+                    </article>
+                    <article class="design-card reveal">
+                        <h3>Builder</h3>
+                        <p>A ready-queue scheduler over a thread pool builds the derivation graph in parallel. Builders get Nix’s environment, structured attributes and <code>passAsFile</code>; outputs are scanned for references and fixed-output hashes are verified.</p>
+                    </article>
+                </div>
+            </div>
+        </section>
+
+        <section id="features" class="section section-alt" aria-labelledby="features-title">
+            <div class="container">
+                <div class="section-header reveal">
+                    <p class="section-kicker">Features</p>
+                    <h2 id="features-title">From the language to the supply chain</h2>
+                    <p>The core is on the main branch. The next set of features is in review, and the supply-chain tooling is planned.</p>
+                </div>
+
+                <div class="feature-groups">
+                    <div>
+                        <h3 class="feature-group-title reveal"><span class="status status-available">Available</span></h3>
+                        <ul class="features" data-stagger>
+                            <li class="feature reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 4C6 4 5 5 5 7v3l-2 2 2 2v3c0 2 1 3 3 3m8-16c2 0 3 1 3 3v3l2 2-2 2v3c0 2-1 3-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle class="accent" cx="12" cy="12" r="1.8" fill="currentColor"/></svg>
+                                <h3>Nix language evaluator</h3>
+                                <p>The full language with <code>with</code>, <code>rec</code>, formals, string contexts, search paths and import from derivation. It evaluates nixpkgs, including <code>lib</code> and the module system.</p>
+                            </li>
+                            <li class="feature reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 20 7.5v9L12 21 4 16.5v-9zM4 7.5 12 12l8-4.5M12 12v9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M12 3 20 7.5 12 12 4 7.5z" fill="currentColor" opacity="0.5"/></svg>
+                                <h3>Store and garbage collection</h3>
+                                <p>NAR serialisation, reference scanning, closures, GC roots and collection, and verification, in a store that needs no root.</p>
+                            </li>
+                            <li class="feature reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 21 8l-9 5-9-5zM3 12l9 5 9-5M3 16l9 5 9-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M12 3 21 8l-9 5-9-5z" fill="currentColor" opacity="0.5"/></svg>
+                                <h3>Parallel builder</h3>
+                                <p>Builds whole derivation graphs with <code>-j</code> jobs, multiple outputs, fixed-output derivations and per-derivation logs.</p>
+                            </li>
+                        </ul>
+                    </div>
+
+                    <div>
+                        <h3 class="feature-group-title reveal"><span class="status status-review">In review</span></h3>
+                        <ul class="features" data-stagger>
+                            <li class="feature reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 19 6v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="m9 12 2 2 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                <h3>Sandboxed builds</h3>
+                                <p>Builds run isolated from the network and the rest of the system, seeing only their declared inputs, on Linux and macOS.</p>
+                            </li>
+                            <li class="feature reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 18h10a4 4 0 0 0 .6-8A6 6 0 0 0 6 11a3.5 3.5 0 0 0 1 7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M12 10v5m-2.5-2.5L12 15l2.5-2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                <h3>Binary caches</h3>
+                                <p>Substitution from HTTP caches with signed <code>.narinfo</code> files, <code>copy</code> between stores and signing keys.</p>
+                            </li>
+                            <li class="feature reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 4h8v6H3zM13 14h8v6h-8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M7 10v4h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                <h3>Daemon and remote builders</h3>
+                                <p>The Nix daemon protocol for multi-user installs, and builds handed off to other machines over SSH.</p>
+                            </li>
+                            <li class="feature reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 3h9l4 4v14H6zM14 3v5h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M9 13h6M9 17h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                                <h3>Flakes and fetchers</h3>
+                                <p>Flakes with lock files, the flake registry, and <code>fetchGit</code>, <code>fetchTarball</code> and <code>fetchTree</code> for Git, GitHub, GitLab and tarballs.</p>
+                            </li>
+                            <li class="feature reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4 7 20M17 4l-2 16M4 9h16M3 15h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle class="accent" cx="12" cy="12" r="2" fill="currentColor"/></svg>
+                                <h3>Content-addressed derivations</h3>
+                                <p>Outputs addressed by what they contain instead of how they were built, with realisations recorded in the store.</p>
+                            </li>
+                            <li class="feature reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 5h16v11H9l-5 4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M12 8v3.5M12 13.5v.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                                <h3>Error messages, TOML and XML</h3>
+                                <p>Errors that point at the source with a hint, readable stack traces, and <code>fromTOML</code> and <code>toXML</code>.</p>
+                            </li>
+                        </ul>
+                    </div>
+
+                    <div>
+                        <h3 class="feature-group-title reveal"><span class="status status-planned">Planned</span></h3>
+                        <ul class="features" data-stagger>
+                            <li class="feature feature-planned reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 3h14v18H5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M8 8h8M8 12h8M8 16h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                                <h3>SBOM generation</h3>
+                                <p>A software bill of materials for any closure, in standard formats, straight from the derivation graph.</p>
+                            </li>
+                            <li class="feature feature-planned reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10.5 4a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13zM15.5 15.5 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path class="accent" d="M10.5 8v3M10.5 13.5v.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                                <h3>Vulnerability scanning</h3>
+                                <p>Match the components of a closure against known vulnerabilities and report which builds are affected.</p>
+                            </li>
+                            <li class="feature feature-planned reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18z" fill="none" stroke="currentColor" stroke-width="1.8"/><path class="accent" d="m8 12 3 3 5-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                <h3>Build provenance</h3>
+                                <p>Signed statements of what was built from which inputs, on which machine, so a release can be traced back to its sources.</p>
+                            </li>
+                            <li class="feature feature-planned reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 18h10a4 4 0 0 0 .6-8A6 6 0 0 0 6 11a3.5 3.5 0 0 0 1 7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M12 16v-5m-2.5 2.5L12 11l2.5 2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                <h3>Registry caches and upload while building</h3>
+                                <p>Binary caches in GitLab and GitHub package registries, filled as each output is finished instead of after the whole build.</p>
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="performance" class="section" aria-labelledby="performance-title">
+            <div class="container">
+                <div class="section-header reveal">
+                    <p class="section-kicker">Performance</p>
+                    <h2 id="performance-title">As fast as Nix, with less memory</h2>
+                    <p>Evaluating <code>(import &lt;nixpkgs&gt; {}).&lt;attr&gt;.drvPath</code> with both tools. Both print the same path.</p>
+                </div>
+                <div class="table-wrap reveal">
+                    <table class="perf-table">
+                        <caption>Apple M-series (aarch64-darwin), nixpkgs 24.11pre, best of three runs, <code>.drv</code> files already in both stores.</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Attribute</th>
+                                <th scope="col">Nix 2.24 time</th>
+                                <th scope="col">cranix time</th>
+                                <th scope="col">Nix peak memory</th>
+                                <th scope="col">cranix peak memory</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <th scope="row"><code>hello</code></th>
+                                <td>0.29&#8202;s<span class="bar" aria-hidden="true"><span style="--value: 81%"></span></span></td>
+                                <td class="ours">0.25&#8202;s<span class="bar bar-ours" aria-hidden="true"><span style="--value: 69%"></span></span></td>
+                                <td>205 MiB<span class="bar" aria-hidden="true"><span style="--value: 77%"></span></span></td>
+                                <td class="ours">157 MiB<span class="bar bar-ours" aria-hidden="true"><span style="--value: 59%"></span></span></td>
+                            </tr>
+                            <tr>
+                                <th scope="row"><code>python3</code></th>
+                                <td>0.29&#8202;s<span class="bar" aria-hidden="true"><span style="--value: 81%"></span></span></td>
+                                <td class="ours">0.26&#8202;s<span class="bar bar-ours" aria-hidden="true"><span style="--value: 72%"></span></span></td>
+                                <td>206 MiB<span class="bar" aria-hidden="true"><span style="--value: 78%"></span></span></td>
+                                <td class="ours">160 MiB<span class="bar bar-ours" aria-hidden="true"><span style="--value: 60%"></span></span></td>
+                            </tr>
+                            <tr>
+                                <th scope="row"><code>git</code></th>
+                                <td>0.36&#8202;s<span class="bar" aria-hidden="true"><span style="--value: 100%"></span></span></td>
+                                <td class="ours">0.35&#8202;s<span class="bar bar-ours" aria-hidden="true"><span style="--value: 97%"></span></span></td>
+                                <td>265 MiB<span class="bar" aria-hidden="true"><span style="--value: 100%"></span></span></td>
+                                <td class="ours">225 MiB<span class="bar bar-ours" aria-hidden="true"><span style="--value: 85%"></span></span></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="perf-notes" data-stagger>
+                    <p class="reveal">Memory is reference counted, with no tracing garbage collector and no global evaluator state. Overlays and bootstrap stages layer over the shared package set instead of copying it, and <code>mapAttrs</code> results share one function and the interned attribute name.</p>
+                    <p class="reveal">Correctness is pinned to Nix: unit tests fix hashes, store paths and <code>.drv</code> paths to the values Nix produces, and a differential suite evaluates the same corpus with both tools, from the builtins to the <code>drvPath</code>s of <code>hello</code>, <code>python3</code> and <code>git</code>.</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="install" class="section section-alt" aria-labelledby="install-title">
+            <div class="container">
+                <div class="section-header reveal">
+                    <p class="section-kicker">Get started</p>
+                    <h2 id="install-title">Build it, then point it at nixpkgs</h2>
+                    <p>cranix builds with a stable Rust toolchain and Cargo. It reads store paths it does not have from the host’s <code>/nix/store</code>, so an existing nixpkgs checkout works directly.</p>
+                </div>
+                <ol class="steps" data-stagger>
+                    <li class="step reveal">
+                        <h3 class="step-title">Build from source</h3>
+                        <div class="code-block">
+                            <pre id="code-build"><span class="prompt" aria-hidden="true">$ </span><span data-command>git clone https://github.com/tmmy-cc/cranix.git</span>
+<span class="prompt" aria-hidden="true">$ </span><span data-command>cd cranix</span>
+<span class="prompt" aria-hidden="true">$ </span><span data-command>cargo build --release</span></pre>
+                            <button class="copy-button" type="button" data-copy-target="code-build" hidden>Copy</button>
+                        </div>
+                    </li>
+                    <li class="step reveal">
+                        <h3 class="step-title">Evaluate a package</h3>
+                        <div class="code-block">
+                            <pre id="code-eval"><span class="prompt" aria-hidden="true">$ </span><span data-command>target/release/cranix eval --expr '(import &lt;nixpkgs&gt; {}).hello.drvPath' -I nixpkgs=/path/to/nixpkgs</span>
+<span class="comment">"/nix/store/…-hello-2.12.1.drv"</span></pre>
+                            <button class="copy-button" type="button" data-copy-target="code-eval" hidden>Copy</button>
+                        </div>
+                    </li>
+                    <li class="step reveal">
+                        <h3 class="step-title">Build into a store of your own</h3>
+                        <div class="code-block">
+                            <pre id="code-store"><span class="prompt" aria-hidden="true">$ </span><span data-command>target/release/cranix --store ~/cranix-store build tests/build.nix -j 8 -L</span></pre>
+                            <button class="copy-button" type="button" data-copy-target="code-store" hidden>Copy</button>
+                        </div>
+                    </li>
+                </ol>
+                <p class="commands reveal">Commands: <code>eval</code>, <code>instantiate</code>, <code>build</code>, <code>show-derivation</code>, <code>hash</code>, <code>nar dump|<wbr>restore</code> and <code>store add|<wbr>path-info|<wbr>closure|<wbr>ls|<wbr>verify|<wbr>gc</code>. Global options include <code>--store</code>, <code>-I</code>, <code>--arg</code>, <code>--argstr</code>, <code>--system</code> and <code>--pure</code>.</p>
+            </div>
+        </section>
+
+        <section class="section" aria-labelledby="cta-title">
+            <div class="container">
+                <div class="cta reveal">
+                    <div class="cta-crown" aria-hidden="true"></div>
+                    <h2 id="cta-title">Read the code. It is small.</h2>
+                    <p>The crates are small enough to read in an afternoon, and the test suite pins their behaviour to Nix’s output. Issues and pull requests are welcome.</p>
+                    <div class="hero-actions">
+                        <a class="button button-primary" href="https://github.com/tmmy-cc/cranix">github.com/tmmy-cc/cranix</a>
+                        <a class="button button-secondary" href="https://github.com/tmmy-cc/cranix/blob/main/docs/comparison.md">Compare with Nix, Lix and Snix</a>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="site-footer">
+        <div class="container footer-grid">
+            <div>
+                <p>cranix is free software under the <a href="https://github.com/tmmy-cc/cranix/blob/main/LICENSE">GNU Lesser General Public License, version 2.1 or later</a>.</p>
+                <p>Nix is a trademark of the NixOS Foundation. cranix is an independent project and is not affiliated with or endorsed by the NixOS Foundation.</p>
+            </div>
+            <ul class="footer-links">
+                <li><a href="https://github.com/tmmy-cc/cranix">GitHub</a></li>
+                <li><a href="imprint.html" hreflang="de">Imprint (Impressum)</a></li>
+                <li><a href="privacy.html" hreflang="de">Privacy (Datenschutz)</a></li>
+            </ul>
+        </div>
+    </footer>
+</body>
+</html>
