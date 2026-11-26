@@ -15,6 +15,7 @@ use oxnix_core::{NarInfo, StorePath};
 use crate::binary_cache::BinaryCache;
 use crate::config::Settings;
 use crate::http::HttpClient;
+use crate::narinfo_cache::{self, NarinfoCache};
 use crate::{canonicalise, fsutil, PathInfo, Result, Store};
 
 /// The caches a store substitutes from, and how much it trusts them.
@@ -24,6 +25,8 @@ pub struct Substituters {
     keys: Vec<PublicKey>,
     require_sigs: bool,
     jobs: usize,
+    /// How long lookups are remembered in the store's narinfo cache.
+    ttls: (u64, u64),
     /// Indices into `caches` of the usable ones, by priority; fetching
     /// `nix-cache-info` is deferred until a lookup needs it.
     order: OnceLock<Vec<usize>>,
@@ -32,7 +35,21 @@ pub struct Substituters {
 
 impl Substituters {
     pub fn new(caches: Vec<BinaryCache>, keys: Vec<PublicKey>, require_sigs: bool, jobs: usize) -> Substituters {
-        Substituters { caches, keys, require_sigs, jobs: jobs.max(1), ..Default::default() }
+        Substituters {
+            caches,
+            keys,
+            require_sigs,
+            jobs: jobs.max(1),
+            ttls: (narinfo_cache::DEFAULT_POSITIVE_TTL, narinfo_cache::DEFAULT_NEGATIVE_TTL),
+            ..Default::default()
+        }
+    }
+
+    /// Sets how long the store remembers that a cache has a path, and
+    /// that it does not; 0 turns that kind of record off.
+    pub fn narinfo_ttls(mut self, positive: u64, negative: u64) -> Substituters {
+        self.ttls = (positive, negative);
+        self
     }
 
     pub fn from_settings(s: &Settings) -> Result<Substituters> {
@@ -46,7 +63,8 @@ impl Substituters {
                 Err(e) => eprintln!("warning: ignoring substituter: {e}"),
             }
         }
-        Ok(Substituters::new(caches, trusted_keys(&s.trusted_public_keys), s.require_sigs, s.max_substitution_jobs))
+        Ok(Substituters::new(caches, trusted_keys(&s.trusted_public_keys), s.require_sigs, s.max_substitution_jobs)
+            .narinfo_ttls(s.narinfo_cache_positive_ttl, s.narinfo_cache_negative_ttl))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -93,8 +111,24 @@ fn parallel<T: Sync>(items: &[T], jobs: usize, f: impl Fn(&T) + Sync) {
 }
 
 impl Store {
-    pub fn set_substituters(&mut self, s: Substituters) {
+    /// Substitutes from `s`, remembering its answers in the store's
+    /// narinfo cache.
+    pub fn set_substituters(&mut self, mut s: Substituters) {
+        let (pos, neg) = s.ttls;
+        s.caches = s
+            .caches
+            .into_iter()
+            .map(|c| {
+                let disk = self.narinfo_cache(&c.url, pos, neg);
+                c.with_narinfo_cache(disk)
+            })
+            .collect();
         self.subst = s;
+    }
+
+    /// The store's record of lookups in the cache at `url`.
+    pub fn narinfo_cache(&self, url: &str, positive_ttl: u64, negative_ttl: u64) -> NarinfoCache {
+        NarinfoCache::new(&self.state.join("narinfo-cache"), url, positive_ttl, negative_ttl)
     }
 
     pub fn substituters(&self) -> &Substituters {

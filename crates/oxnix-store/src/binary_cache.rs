@@ -2,7 +2,7 @@
 //! one `<hash>.narinfo` per store path and compressed NARs under `nar/`.
 //! `file://` caches are directories; `http(s)://` caches are accessed
 //! through an [`HttpClient`], which also uploads to caches that accept
-//! `PUT`.
+//! `PUT`. A [`NarinfoCache`] can remember lookups between runs.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -16,6 +16,7 @@ use oxnix_core::signing::SecretKey;
 use oxnix_core::{nar, NarInfo, StoreDir};
 
 use crate::http::HttpClient;
+use crate::narinfo_cache::NarinfoCache;
 use crate::{fsutil, PathInfo, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,6 +180,7 @@ pub struct BinaryCache {
     location: Location,
     params: BTreeMap<String, String>,
     http: HttpClient,
+    disk: Option<NarinfoCache>,
     info: OnceLock<std::result::Result<CacheInfo, String>>,
 }
 
@@ -209,13 +211,20 @@ impl BinaryCache {
         } else {
             return Err(format!("don't know how to open binary cache '{url}'; use a file:// or https:// URL"));
         };
-        Ok(BinaryCache { url: base, location, params, http: HttpClient::default(), info: OnceLock::new() })
+        Ok(BinaryCache { url: base, location, params, http: HttpClient::default(), disk: None, info: OnceLock::new() })
     }
 
     /// Makes HTTP requests with `http`, which carries for example the
     /// credentials for this cache.
     pub fn with_http(mut self, http: HttpClient) -> BinaryCache {
         self.http = http;
+        self
+    }
+
+    /// Remembers narinfo lookups in `disk`, and answers from it while
+    /// its entries are fresh.
+    pub fn with_narinfo_cache(mut self, disk: NarinfoCache) -> BinaryCache {
+        self.disk = Some(disk);
         self
     }
 
@@ -295,7 +304,17 @@ impl BinaryCache {
         self.info
             .get_or_init(|| {
                 let mut info = CacheInfo { store_dir: "/nix/store".into(), priority: 50, want_mass_query: false };
-                if let Some(data) = self.get_file("nix-cache-info")? {
+                let data = match self.disk.as_ref().and_then(NarinfoCache::cache_info) {
+                    Some(d) => d,
+                    None => {
+                        let d = self.get_file("nix-cache-info")?;
+                        if let Some(disk) = &self.disk {
+                            disk.put_cache_info(&d);
+                        }
+                        d
+                    }
+                };
+                if let Some(data) = data {
                     for line in String::from_utf8_lossy(&data).lines() {
                         match line.split_once(':').map(|(k, v)| (k.trim(), v.trim())) {
                             Some(("StoreDir", v)) => info.store_dir = v.to_string(),
@@ -328,7 +347,17 @@ impl BinaryCache {
 
     pub fn query_narinfo(&self, dir: &StoreDir, hash_part: &str) -> Result<Option<NarInfo>> {
         let rel = format!("{hash_part}.narinfo");
-        match self.get_file(&rel)? {
+        let data = match self.disk.as_ref().and_then(|d| d.narinfo(hash_part)) {
+            Some(d) => d,
+            None => {
+                let d = self.get_file(&rel)?;
+                if let Some(disk) = &self.disk {
+                    disk.put_narinfo(hash_part, &d);
+                }
+                d
+            }
+        };
+        match data {
             Some(d) => NarInfo::parse(dir, &String::from_utf8_lossy(&d), &format!("{}/{rel}", self.url)).map(Some),
             None => Ok(None),
         }
@@ -436,7 +465,11 @@ impl BinaryCache {
             ni.sigs = all.into_iter().collect();
             // The narinfo goes up last, so that a cache never offers a
             // path whose NAR is missing.
-            self.put_bytes(&format!("{}.narinfo", info.path.hash_part()), ni.to_text(dir).as_bytes(), "text/x-nix-narinfo")?;
+            let text = ni.to_text(dir);
+            self.put_bytes(&format!("{}.narinfo", info.path.hash_part()), text.as_bytes(), "text/x-nix-narinfo")?;
+            if let Some(disk) = &self.disk {
+                disk.put_narinfo(info.path.hash_part(), &Some(text.into_bytes()));
+            }
             Ok(ni)
         })();
         let _ = fs::remove_file(&tmp);

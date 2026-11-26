@@ -19,6 +19,10 @@ pub struct Settings {
     pub substitute: bool,
     pub secret_key_files: Vec<String>,
     pub max_substitution_jobs: usize,
+    /// Seconds for which a cache's answer that it has a path, or that it
+    /// does not, is remembered.
+    pub narinfo_cache_positive_ttl: u64,
+    pub narinfo_cache_negative_ttl: u64,
     /// Credentials for HTTP caches, used when the file exists.
     pub netrc_file: String,
     /// How many times an HTTP request is tried before giving up.
@@ -34,6 +38,8 @@ impl Default for Settings {
             substitute: true,
             secret_key_files: Vec::new(),
             max_substitution_jobs: 16,
+            narinfo_cache_positive_ttl: crate::narinfo_cache::DEFAULT_POSITIVE_TTL,
+            narinfo_cache_negative_ttl: crate::narinfo_cache::DEFAULT_NEGATIVE_TTL,
             netrc_file: config_dir().join("netrc").to_string_lossy().into_owned(),
             download_attempts: 5,
         }
@@ -73,6 +79,8 @@ impl Settings {
                 | "substitute"
                 | "secret-key-files"
                 | "max-substitution-jobs"
+                | "narinfo-cache-positive-ttl"
+                | "narinfo-cache-negative-ttl"
                 | "netrc-file"
                 | "download-attempts"
         )
@@ -98,6 +106,14 @@ impl Settings {
             }
             "max-substitution-jobs" if !extra => {
                 self.max_substitution_jobs = parse_int(name, value)?;
+                return Ok(());
+            }
+            "narinfo-cache-positive-ttl" if !extra => {
+                self.narinfo_cache_positive_ttl = parse_int(name, value)?;
+                return Ok(());
+            }
+            "narinfo-cache-negative-ttl" if !extra => {
+                self.narinfo_cache_negative_ttl = parse_int(name, value)?;
                 return Ok(());
             }
             "netrc-file" if !extra => {
@@ -196,9 +212,9 @@ mod tests {
         assert_eq!(s.substituters, ["file:///a", "https://b", "file:///c"]);
         assert_eq!(s.trusted_public_keys, [DEFAULT_CACHE_KEY, "k:AAAA"]);
         assert!(!s.require_sigs);
-        s.apply_text("download-attempts = 2\nnetrc-file = /n\n", &dir).unwrap();
-        assert_eq!((s.download_attempts, s.netrc_file.as_str()), (2, "/n"));
-        assert!(s.apply_text("download-attempts = soon", &dir).is_err());
+        s.apply_text("narinfo-cache-negative-ttl = 0\ndownload-attempts = 2\nnetrc-file = /n\n", &dir).unwrap();
+        assert_eq!((s.narinfo_cache_negative_ttl, s.download_attempts, s.netrc_file.as_str()), (0, 2, "/n"));
+        assert!(s.apply_text("narinfo-cache-positive-ttl = soon", &dir).is_err());
         assert!(s.apply_text("require-sigs = maybe", &dir).is_err());
         assert!(s.apply_text("include missing.conf", &dir).is_err());
         assert!(s.apply_text("no equals sign", &dir).is_err());

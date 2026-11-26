@@ -850,6 +850,9 @@ fn cmd_copy(cli: &Cli, args: &[String]) -> Result<(), String> {
         (Some(to), None) => {
             let s = &cli.settings;
             let cache = BinaryCache::open(&to)?.with_http(http_client(s));
+            // Uploads replace what the store remembers about this cache.
+            let disk = store.narinfo_cache(&cache.url, s.narinfo_cache_positive_ttl, s.narinfo_cache_negative_ttl);
+            let cache = cache.with_narinfo_cache(disk);
             cache.init_for_writing(&store.dir)?;
             let mut key_files: Vec<&str> = cli.settings.secret_key_files.iter().map(String::as_str).collect();
             key_files.extend(cache.param("secret-key"));
@@ -893,7 +896,10 @@ fn cmd_copy(cli: &Cli, args: &[String]) -> Result<(), String> {
             let s = &cli.settings;
             let cache = BinaryCache::open(&from)?.with_http(http_client(s));
             let keys = trusted_keys(&s.trusted_public_keys);
-            store.set_substituters(Substituters::new(vec![cache], keys, check_sigs, s.max_substitution_jobs));
+            store.set_substituters(
+                Substituters::new(vec![cache], keys, check_sigs, s.max_substitution_jobs)
+                    .narinfo_ttls(s.narinfo_cache_positive_ttl, s.narinfo_cache_negative_ttl),
+            );
             let failed = store.substitute_paths(&roots)?;
             if let Some(p) = failed.first() {
                 return Err(format!("path '{}' is not available from '{from}'", store.dir.print(p)));
