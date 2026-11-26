@@ -317,8 +317,23 @@ impl Sandbox {
         }
     }
 
-    /// A command running `builder` inside the sandbox.
-    pub fn command(&self, builder: &str, args: &[String], top: &Path) -> Command {
+    /// A command running `builder`, built for `platform`, inside the
+    /// sandbox.
+    pub fn command(&self, builder: &str, args: &[String], top: &Path, platform: &str) -> Command {
+        #[cfg(target_os = "linux")]
+        {
+            let mut c = self.command_for(builder, args, top);
+            linux::set_personality(&mut c, platform);
+            c
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = platform;
+            self.command_for(builder, args, top)
+        }
+    }
+
+    fn command_for(&self, builder: &str, args: &[String], top: &Path) -> Command {
         match self {
             Sandbox::None => {
                 let mut c = Command::new(builder);

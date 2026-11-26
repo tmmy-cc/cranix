@@ -221,3 +221,36 @@ fn max_silent_time_kills_the_build() {
     check_limit(false, &["--max-silent-time", "1"], "timed out after 1 seconds of silence");
     check_limit(true, &["--max-silent-time", "1"], "timed out after 1 seconds of silence");
 }
+
+/// The personality a Linux builder of `system` runs with, in either
+/// sandbox mode (the default falls back to no sandbox where needed).
+#[cfg(target_os = "linux")]
+fn personality(store: &TempStore, system: &str) -> Option<u64> {
+    let mut args = probe_args("/", "1", "", "personality");
+    args.extend(["--argstr", "targetSystem", system]);
+    let o = build(store, &args);
+    // User-mode emulators such as qemu-user refuse the 32-bit personality.
+    if stderr(&o).contains("setting the 32-bit personality: errno 22") {
+        eprintln!("skipping {system}: this kernel or emulator refuses the 32-bit personality");
+        return None;
+    }
+    let text = std::fs::read_to_string(&outputs(&o)[0]).unwrap();
+    Some(u64::from_str_radix(text.trim(), 16).unwrap())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn builds_get_nix_personality() {
+    const PER_LINUX32: u64 = 0x0008;
+    const ADDR_NO_RANDOMIZE: u64 = 0x0040000;
+    let store = TempStore::new("personality");
+    let host = format!("{}-linux", std::env::consts::ARCH);
+    let p = personality(&store, &host).unwrap();
+    assert_eq!(p & ADDR_NO_RANDOMIZE, ADDR_NO_RANDOMIZE, "{p:#x}");
+    assert_eq!(p & PER_LINUX32, 0, "{p:#x}");
+    if host == "x86_64-linux" {
+        if let Some(p) = personality(&store, "i686-linux") {
+            assert_eq!(p & PER_LINUX32, PER_LINUX32, "{p:#x}");
+        }
+    }
+}

@@ -278,6 +278,31 @@ impl Chroot {
     }
 }
 
+/// Sets the process personality like Nix: 32-bit for `i686-linux` builds
+/// on x86_64 and for 32-bit ARM builds, so `uname` reports the build's
+/// machine, and without address space randomisation, for determinism.
+/// Runs after the sandbox is entered, right before `exec`.
+pub(crate) fn set_personality(c: &mut Command, platform: &str) {
+    // From <sys/personality.h>.
+    const PER_LINUX32: libc::c_ulong = 0x0008;
+    const ADDR_NO_RANDOMIZE: libc::c_ulong = 0x0040000;
+    let linux32 = (platform == "i686-linux" && std::env::consts::ARCH == "x86_64")
+        || matches!(platform, "armv7l-linux" | "armv6l-linux" | "armv5tel-linux");
+    // SAFETY: personality is a plain system call.
+    unsafe {
+        c.pre_exec(move || {
+            if linux32 && libc::personality(PER_LINUX32) == -1 {
+                return Err(fail(b"setting the 32-bit personality", None));
+            }
+            let cur = libc::personality(0xffff_ffff);
+            if cur != -1 {
+                libc::personality(cur as libc::c_ulong | ADDR_NO_RANDOMIZE);
+            }
+            Ok(())
+        });
+    }
+}
+
 /// Writes `msg`, `arg` and the current `errno` to stderr (the build log)
 /// without allocating, and returns the error.
 fn fail(msg: &[u8], arg: Option<&CString>) -> io::Error {
@@ -297,7 +322,7 @@ fn fail(msg: &[u8], arg: Option<&CString>) -> io::Error {
         // SAFETY: writes a valid buffer to fd 2; failure is ignored.
         unsafe { libc::write(2, b.as_ptr().cast(), b.len()) };
     };
-    put(b"oxnix: setting up the build sandbox: ");
+    put(b"oxnix: preparing the builder: ");
     put(msg);
     if let Some(a) = arg {
         put(b" '");

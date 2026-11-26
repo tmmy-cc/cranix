@@ -553,7 +553,7 @@ impl Store {
         let (out_r, out_w) = log_pipe().map_err(|e| format!("creating log pipe: {e}"))?;
         let out_w2 = out_w.try_clone().map_err(|e| format!("creating log pipe: {e}"))?;
         let spawned = sb
-            .command(&drv.builder, &drv.args, top)
+            .command(&drv.builder, &drv.args, top, &drv.platform)
             .env_clear()
             .envs(&env)
             .stdin(Stdio::null())

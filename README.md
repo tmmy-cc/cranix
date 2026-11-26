@@ -82,7 +82,9 @@ builder is PID 1 of new user, mount, PID, IPC, UTS and network namespaces,
 in a chroot assembled from bind mounts (inputs and sandbox paths read-only)
 with minimal `/dev`, `/proc`, `/dev/shm`, a writable `/tmp`, the build
 directory at `/build`, hostname `localhost`, a loopback-only network and
-Nix's `/etc/passwd`, `/etc/group` and `/etc/hosts`. Inside, it is `nixbld`
+Nix's `/etc/passwd`, `/etc/group` and `/etc/hosts`. As in Nix, Linux
+builds run without address space randomisation, and `i686-linux` builds on
+x86_64 (and 32-bit ARM builds) with the 32-bit personality. Inside, it is `nixbld`
 (uid 1000, gid 100), mapped to the invoking user, so no privileges are
 needed. On macOS it runs under `sandbox-exec` with a profile generated like
 Nix's, honouring `__impureHostDeps` (within `allowed-impure-host-deps`),

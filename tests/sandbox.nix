@@ -10,6 +10,8 @@
   port,
   bash ? "/bin/bash",
   sleep ? "/bin/sleep",
+  # Platform of `personality`.
+  targetSystem ? builtins.currentSystem,
   # Varies the derivations, so one store can build them in several modes.
   tag ? "",
 }:
@@ -47,6 +49,12 @@ in
     outputHashAlgo = "sha256";
     outputHash = builtins.hashString "sha256" "hello from the network\n";
   };
+
+  # Records the Linux process personality the builder runs with.
+  personality = sh "sandbox-personality" ''
+    read -r p < /proc/self/personality
+    echo "$p" > $out
+  '' { system = targetSystem; };
 
   # Runs past any timeout, with a background process that holds the log
   # pipe open.
