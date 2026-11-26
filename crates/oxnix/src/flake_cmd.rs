@@ -83,7 +83,7 @@ pub fn new_eval(cli: &Cli, impure: bool) -> Result<Rc<Eval>, String> {
     let store = crate::open_store(cli)?;
     let pure = cli.pure || !impure;
     let search_path = if pure { Vec::new() } else { cli.search.clone() };
-    let ev = Eval::new(store, Options { search_path, system: cli.system.clone(), pure, trace_verbose: false, experimental_features: cli.features.clone() });
+    let ev = Eval::new(store, Options { search_path, system: cli.system.clone(), pure, trace_verbose: false, experimental_features: cli.features.clone(), resolve_search: None });
     Ok(ev)
 }
 
@@ -1006,26 +1006,13 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Resolves `NIX_PATH`/`-I` entries of the form `prefix=flake:ref` to the
-/// store path of the flake's source.
-pub fn resolve_flake_search(cli: &Cli, entries: &[(String, String)]) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    if entries.is_empty() {
-        return out;
-    }
-    let Ok(store) = crate::open_store(cli) else { return out };
-    for (prefix, r) in entries {
-        let res = (|| -> Result<String, String> {
-            let fr = flakeref::parse(r.trim_start_matches("flake:"), None, true, true)?;
-            let fr = if fr.input.is_direct() { fr } else { fr.resolve(&store)? };
-            let (sp, _) = fr.fetch_tree(&store)?;
-            let p = store.dir.print(&sp);
-            Ok(if fr.subdir.is_empty() { p } else { format!("{p}/{}", fr.subdir) })
-        })();
-        match res {
-            Ok(p) => out.push((prefix.clone(), p)),
-            Err(e) => oxnix_fetchers::warn(format!("cannot resolve search path entry '{r}': {e}")),
-        }
-    }
-    out
+/// Resolves a `flake:` search path entry (`nixpkgs=flake:nixpkgs`) to the
+/// store path of the fetched flake, as Nix does on the first lookup.
+pub fn resolve_search_entry(store: &oxnix_store::Store, entry: &str) -> Result<String, String> {
+    let r = entry.strip_prefix("flake:").ok_or_else(|| format!("unsupported search path entry '{entry}'"))?;
+    let fr = flakeref::parse(r, None, true, true)?;
+    let fr = if fr.input.is_direct() { fr } else { fr.resolve(store)? };
+    let (sp, _) = fr.fetch_tree(store)?;
+    let p = store.dir.print(&sp);
+    Ok(if fr.subdir.is_empty() { p } else { format!("{p}/{}", fr.subdir) })
 }

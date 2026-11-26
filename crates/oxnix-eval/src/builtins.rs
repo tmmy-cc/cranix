@@ -911,10 +911,7 @@ fn find_file(ev: &Eval, path: &Value, name: &str) -> R<Value> {
             None => String::new(),
         };
         let Some(p) = e.get_str("path") else { continue };
-        let base = ev.force_plain_str(p)?;
-        if !base.starts_with('/') {
-            continue;
-        }
+        let entry = ev.force_plain_str(p)?;
         let rest = if prefix.is_empty() {
             Some(format!("/{name}"))
         } else if name == prefix {
@@ -923,6 +920,7 @@ fn find_file(ev: &Eval, path: &Value, name: &str) -> R<Value> {
             name.strip_prefix(&format!("{prefix}/")).map(|r| format!("/{r}"))
         };
         if let Some(rest) = rest {
+            let Some(base) = ev.resolve_search_entry(&entry) else { continue };
             let full = canon_path(&format!("{base}{rest}"));
             if ev.store.resolve(&full).exists() {
                 return Ok(Value::Path(full.into()));

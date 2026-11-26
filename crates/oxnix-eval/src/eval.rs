@@ -38,7 +38,12 @@ pub struct Options {
     pub trace_verbose: bool,
     /// Enabled experimental features, e.g. `ca-derivations`.
     pub experimental_features: BTreeSet<String>,
+    /// Turns a search path entry that is no absolute path, such as
+    /// `flake:nixpkgs`, into one. Called on the first lookup that needs it.
+    pub resolve_search: Option<Box<SearchResolver>>,
 }
+
+pub type SearchResolver = dyn Fn(&Store, &str) -> Result<String, String>;
 
 impl Options {
     /// Fails like Nix when experimental feature `name` is disabled.
@@ -65,6 +70,8 @@ pub struct Eval {
     /// `hashDerivationModulo` results, keyed by `.drv` path.
     pub drv_hashes: RefCell<HashMap<StorePath, DrvHash>>,
     pub regex_cache: RefCell<HashMap<String, Rc<regex::Regex>>>,
+    /// Resolved search path entries; `None` when resolving failed.
+    search_resolved: RefCell<HashMap<String, Option<String>>>,
     depth: Cell<usize>,
 }
 
@@ -101,10 +108,34 @@ impl Eval {
             drvs: RefCell::new(HashMap::new()),
             drv_hashes: RefCell::new(HashMap::new()),
             regex_cache: RefCell::new(HashMap::new()),
+            search_resolved: RefCell::new(HashMap::new()),
             depth: Cell::new(0),
         });
         let _ = ev.base_env.set(Env::new(None, values));
         ev
+    }
+
+    /// The absolute path a search path entry stands for, resolving entries
+    /// such as `flake:nixpkgs` once with `Options::resolve_search`.
+    pub fn resolve_search_entry(&self, entry: &str) -> Option<String> {
+        if entry.starts_with('/') {
+            return Some(entry.to_string());
+        }
+        if let Some(r) = self.search_resolved.borrow().get(entry) {
+            return r.clone();
+        }
+        let r = match &self.opts.resolve_search {
+            Some(f) => match f(&self.store, entry) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprintln!("warning: cannot resolve search path entry '{entry}': {e}");
+                    None
+                }
+            },
+            None => None,
+        };
+        self.search_resolved.borrow_mut().insert(entry.to_string(), r.clone());
+        r
     }
 
     pub fn base_env(&self) -> &Rc<Env> {

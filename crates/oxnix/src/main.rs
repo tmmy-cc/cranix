@@ -390,7 +390,7 @@ fn parse_target(args: &[String], value_flags: &[&str]) -> Result<Target, String>
 
 fn new_eval(cli: &Cli) -> Result<Rc<Eval>, String> {
     let mut search_path = cli.search.clone();
-    search_path.extend(flake_cmd::resolve_flake_search(cli, &cli.flake_search));
+    search_path.extend(cli.flake_search.iter().cloned());
     let store = open_store(cli)?;
     let opts = Options {
         search_path,
@@ -398,6 +398,7 @@ fn new_eval(cli: &Cli) -> Result<Rc<Eval>, String> {
         pure: cli.pure,
         trace_verbose: false,
         experimental_features: cli.features.clone(),
+        resolve_search: Some(Box::new(flake_cmd::resolve_search_entry)),
     };
     Ok(Eval::new(store, opts))
 }
