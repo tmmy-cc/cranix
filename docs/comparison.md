@@ -121,9 +121,10 @@ Nix's single-process, single-machine shape:
   (`passAsFile`, structured attributes as JSON, `impureEnvVars`) and
   reference scanning, and leaves out sandboxing and remote builders.
 * Substitution fetches whole closures from `file://` and `https://` binary
-  caches before building, checking signatures and streaming hashes; `copy
-  --to` writes caches that Nix reads, with NARs compressed like
-  cache.nixos.org's.
+  caches before building, checking signatures and streaming hashes, and
+  remembers lookups on disk with Nix's TTLs (one file per path, where Nix
+  uses SQLite); `copy --to` writes caches that Nix reads, over `PUT` for
+  HTTP, with NARs compressed like cache.nixos.org's.
 
 ### Measured against Nix 2.24
 

@@ -84,13 +84,22 @@ dependency order once their references are valid. With `require-sigs`, a
 narinfo must carry an ed25519 signature by one of `trusted-public-keys` over
 Nix's fingerprint, or be content-addressed. `builtins.storePath` substitutes
 missing paths the same way. Caches hold `/nix/store` paths, so substitution
-applies to the default chroot store.
+applies to the default chroot store. HTTP requests are retried on
+connection errors, 408, 429 and 5xx (`download-attempts`), and take
+credentials from `netrc-file` (default `~/.config/oxnix/netrc`). Lookups,
+including misses, are remembered per cache under the store's
+`narinfo-cache` directory for `narinfo-cache-positive-ttl` (30 days) and
+`narinfo-cache-negative-ttl` (1 hour). `copy --to` uploads each NAR before
+the narinfo that names it, so an interrupted upload never leaves a narinfo
+without its NAR.
 
 Settings use `nix.conf` syntax and are read from
 `~/.config/oxnix/oxnix.conf`, then `$OXNIX_CONFIG`, then `--option NAME
 VALUE` (or `--NAME VALUE`, `--[no-]NAME`): `substituters`,
 `trusted-public-keys`, `require-sigs`, `substitute`, `secret-key-files`,
-`max-substitution-jobs`, each list also as `extra-NAME`.
+`max-substitution-jobs`, `narinfo-cache-positive-ttl`,
+`narinfo-cache-negative-ttl`, `netrc-file` and `download-attempts`, each list
+also as `extra-NAME`.
 
 ## Usage
 
@@ -119,7 +128,7 @@ Commands: `eval` (`--json`, `--raw`, `--lazy`), `instantiate`, `build`
 `hash path|file|convert`, `nar dump|restore`, and
 `store add|path-info|sign|closure|ls|verify|gc` (`path-info --json -r
 --closure-size`, also against a cache with `--store URL`), `copy --to URL` and
-`copy --from URL` for `file://` and `https://` caches, and
+`copy --from URL` for `file://` and `http(s)://` caches (uploads with `PUT`), and
 `key generate-secret|convert-secret-to-public`. Global options: `--store`,
 `-I`, `--arg`, `--argstr`, `--system`, `--pure`, `--option`. `NIX_PATH`
 entries that are absolute paths are honoured.
@@ -136,7 +145,7 @@ operations listed above, and binary caches: narinfo reading and writing,
 signatures, substitution and `copy`.
 
 Not implemented: the daemon and its wire protocol, S3 and SSH stores,
-narinfo disk caching, sandboxing, remote builders,
+sandboxing, remote builders,
 flakes, `fetchGit`/`fetchTarball`/`fetchTree`, content-addressed
 (floating) and impure derivations, `fromTOML`, `toXML`, `unsafeGetAttrPos`
 (returns `null`), and profiles/`nix-env`.
@@ -153,6 +162,10 @@ flakes, `fetchGit`/`fetchTarball`/`fetchTree`, content-addressed
   from nixpkgs.
 * `tests/build.nix` exercises the builder: parallel leaves, references,
   `passAsFile`, multiple outputs and a fixed-output derivation.
+* `tests/http-cache.sh` uploads a closure to a local HTTP cache (the
+  `cache-server` example of `oxnix-store`) and reads it back with
+  `nix path-info`, `nix store verify` and `nix copy`. The same server backs
+  the `http_cache` integration test run by `cargo test`.
 
 ## Profiling
 
