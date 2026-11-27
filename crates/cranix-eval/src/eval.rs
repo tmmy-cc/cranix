@@ -227,6 +227,12 @@ impl Eval {
     // ---- parsing and import ----
 
     pub fn parse(&self, src: &str, file_name: &str, base_dir: &str) -> R<&'static Expr> {
+        self.parse_scoped(src, file_name, base_dir, &[])
+    }
+
+    /// [`Eval::parse`] with the names `scope` in a scope in front of the
+    /// globals.
+    pub fn parse_scoped(&self, src: &str, file_name: &str, base_dir: &str, scope: &[Sym]) -> R<&'static Expr> {
         let file = {
             let mut files = self.files.borrow_mut();
             files.push((file_name.to_string(), src.into()));
@@ -237,7 +243,11 @@ impl Eval {
             err.pos = Some(Pos { file, offset: e.offset as u32 });
             Box::new(err)
         })?;
-        Compiler::new(&self.globals).compile(ast).map_err(|e| {
+        let mut compiler = Compiler::new(&self.globals);
+        if !scope.is_empty() {
+            compiler = compiler.with_scope(scope.iter().cloned());
+        }
+        compiler.compile(ast).map_err(|e| {
             let msg = match e.prev {
                 Some(p) => format!("{} at {}", e.msg, self.fmt_pos(p)),
                 None => e.msg,
@@ -255,14 +265,39 @@ impl Eval {
     }
 
     pub fn import(&self, path: &str) -> R<Value> {
-        let mut path = canon_path(path);
-        let real = self.store.resolve(&path);
-        if real.is_dir() {
-            path = format!("{path}/default.nix");
-        }
+        let path = self.import_path(path);
         if let Some(v) = self.import_cache.borrow().get(&path) {
             return Ok(v.clone());
         }
+        let (src, dir) = self.import_source(&path)?;
+        let e = self.parse(&src, &path, &dir)?;
+        let v = self.eval(e, &self.base_env().clone())?;
+        self.import_cache.borrow_mut().insert(path, v.clone());
+        Ok(v)
+    }
+
+    /// Evaluates the file at `path` with the attributes of `scope` as
+    /// variables in front of the builtins.
+    pub fn scoped_import(&self, path: &str, scope: &Attrs) -> R<Value> {
+        let path = self.import_path(path);
+        let (src, dir) = self.import_source(&path)?;
+        let names: Vec<Sym> = scope.iter().map(|(k, _)| k.clone()).collect();
+        let e = self.parse_scoped(&src, &path, &dir, &names)?;
+        let env = Env::new(Some(self.base_env().clone()), scope.iter().map(|(_, v)| v.clone()).collect());
+        self.eval(e, &env)
+    }
+
+    fn import_path(&self, path: &str) -> String {
+        let path = canon_path(path);
+        if self.store.resolve(&path).is_dir() {
+            format!("{path}/default.nix")
+        } else {
+            path
+        }
+    }
+
+    /// The text of a file to import and the directory it is in.
+    fn import_source(&self, path: &str) -> R<(String, String)> {
         let src = match path.strip_prefix("/__corepkgs__/").and_then(crate::builtins::corepkg) {
             Some(s) => s.to_string(),
             None => {
@@ -275,10 +310,7 @@ impl Eval {
             Some(i) => path[..i].to_string(),
             None => ".".to_string(),
         };
-        let e = self.parse(&src, &path, &dir)?;
-        let v = self.eval(e, &self.base_env().clone())?;
-        self.import_cache.borrow_mut().insert(path, v.clone());
-        Ok(v)
+        Ok((src, dir))
     }
 
     // ---- core evaluation ----
