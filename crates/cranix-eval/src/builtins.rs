@@ -684,7 +684,16 @@ pub static PRIMOPS: &[PrimOp] = &[
         let s = ev.force_str(&a[0])?;
         Ok(Value::str(s.s.clone()))
     }),
-    prim!("unsafeGetAttrPos", 2, |_, _| Ok(Value::Null)),
+    prim!("unsafeGetAttrPos", 2, |ev, a| {
+        let name = Sym::new(&ev.force_plain_str(&a[0])?);
+        let Some(pos) = ev.force_attrs(&a[1])?.position(&name) else { return Ok(Value::Null) };
+        let (file, line, column) = ev.pos_info(pos);
+        Ok(Value::attrs(Attrs::from_unsorted(vec![
+            (Sym::new("file"), Value::str(file)),
+            (Sym::new("line"), Value::Int(line as i64)),
+            (Sym::new("column"), Value::Int(column as i64)),
+        ])))
+    }),
     prim!("warn", 2, |ev, a| {
         let s = ev.force_plain_str(&a[0])?;
         eprintln!("evaluation warning: {s}");

@@ -4,10 +4,8 @@ nix/eval-okay-attrs5
 nix/eval-okay-attrs6
 nix/eval-okay-context-introspection
 nix/eval-okay-fromTOML-timestamps
-nix/eval-okay-getattrpos
 nix/eval-okay-getattrpos-functionargs
 nix/eval-okay-import
-nix/eval-okay-inherit-attr-pos
 nix/eval-okay-inherit-from
 nix/eval-okay-overrides
 nix/eval-okay-path-string-interpolation

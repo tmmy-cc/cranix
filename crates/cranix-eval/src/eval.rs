@@ -404,7 +404,7 @@ impl Eval {
                         return err(format!("dynamic attribute '{d}' already defined"));
                     }
                 }
-                Ok(Value::attrs(Attrs::from_sorted(entries)))
+                Ok(Value::attrs(Attrs::from_sorted(entries).with_positions(def.positions)))
             }
             Expr::Let { slots, body } => {
                 let en = Env::new(Some(env.clone()), vec![Value::Null; slots.len()]);

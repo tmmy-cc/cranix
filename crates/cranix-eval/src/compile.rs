@@ -39,6 +39,8 @@ pub struct AttrsDef {
     pub rec: bool,
     pub statics: Box<[(Sym, &'static Expr)]>,
     pub dynamics: Box<[(&'static Expr, &'static Expr)]>,
+    /// Where each static attribute is defined, sorted by name.
+    pub positions: crate::value::PosTable,
 }
 
 pub enum Expr {
@@ -96,6 +98,12 @@ enum Node {
     Inherit(Sym, Pos),
     InheritFrom(usize, Sym, Pos),
     Nested(Tree, Pos),
+}
+
+/// A sorted position table, leaked like the rest of the compiled code.
+fn pos_table(mut v: Vec<(Sym, Pos)>) -> crate::value::PosTable {
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    Box::leak(v.into_boxed_slice())
 }
 
 #[derive(Default)]
@@ -423,6 +431,7 @@ impl Compiler {
         }
         let result = (|| {
             let mut statics = Vec::new();
+            let positions = pos_table(tree.statics.iter().map(|(k, v)| (k.clone(), v.pos())).collect());
             for (k, v) in tree.statics {
                 let v = match v {
                     // Without a new scope `inherit x` resolves right here.
@@ -443,6 +452,7 @@ impl Compiler {
                 rec: false,
                 statics: statics.into_boxed_slice(),
                 dynamics: dynamics.into_boxed_slice(),
+                positions,
             })))
         })();
         if new_env {
@@ -469,6 +479,7 @@ impl Compiler {
 
     fn rec_attrs(&mut self, tree: Tree) -> R<&'static Expr> {
         let Tree { statics, dynamics: dyn_asts, sources } = tree;
+        let positions = pos_table(statics.iter().map(|(k, v)| (k.clone(), v.pos())).collect());
         let (slots, names) = self.rec_scope(Tree { statics, dynamics: Vec::new(), sources })?;
         let result = (|| {
             let statics = names
@@ -482,7 +493,7 @@ impl Compiler {
                 let v = self.node(&Sym::new("<dynamic>"), v, None)?;
                 dynamics.push((k, v));
             }
-            Ok(leak(Expr::Attrs(AttrsDef { slots, new_env: true, rec: true, statics, dynamics: dynamics.into_boxed_slice() })))
+            Ok(leak(Expr::Attrs(AttrsDef { slots, new_env: true, rec: true, statics, dynamics: dynamics.into_boxed_slice(), positions })))
         })();
         self.pop();
         result
