@@ -48,6 +48,7 @@ commands:
   store path-info [--json] [-r] [-S | --closure-size] PATH...
   store sign -k KEYFILE [-r] PATH...            add signatures to local paths
   copy --to URL PATH... | copy --from URL PATH...   copy closures to or from a binary cache
+  cache serve [--listen ADDR:PORT] URL           serve a binary cache (e.g. gitlab://, github://) over HTTP
   key generate-secret --key-name NAME | key convert-secret-to-public < KEY
   config show [--show-secrets] [NAME]            print the settings in effect
   store serve [--write]                          serve the store to ssh:// clients (also: --serve)
@@ -74,7 +75,8 @@ global options:
                     (/etc/nix), ~/.config/nix/nix.conf ($XDG_CONFIG_HOME,
                     $NIX_USER_CONF_FILES), ~/.config/cranix/cranix.conf,
                     $CRANIX_CONFIG, $NIX_CONFIG and then the command line
-  --store URL       for 'store path-info', read a binary cache (file:// or https://)
+  --store URL       for 'store path-info', read a binary cache (file://, https://,
+                    gitlab://HOST/GROUP/PROJECT or github://OWNER/REPO)
 
 flake options (eval, build, run, shell, develop, flake):
   --impure, --no-write-lock-file, --no-update-lock-file, --recreate-lock-file,
@@ -296,6 +298,7 @@ fn run() -> Result<(), String> {
         "--serve" => serve(&cli, &args),
         "store" => cmd_store(&cli, &args),
         "copy" => cmd_copy(&cli, &args),
+        "cache" => cache_serve::cmd_cache(&cli.settings, &args),
         "key" => cmd_key(&args),
         "config" => cmd_config(&cli, &args),
         "daemon" => {
