@@ -593,7 +593,14 @@ impl<'a> Parser<'a> {
             Tok::Interp => {
                 let e = self.expr()?;
                 self.expect("}")?;
-                Ok(AttrName::Dynamic(e))
+                // An interpolated string literal is a static name.
+                match &e {
+                    Ast::Str(parts, _) => match static_string(parts) {
+                        Some(s) => Ok(AttrName::Static(Sym::new(&s))),
+                        None => Ok(AttrName::Dynamic(e)),
+                    },
+                    _ => Ok(AttrName::Dynamic(e)),
+                }
             }
             t => self.err(at, format!("syntax error, unexpected {}, expecting an attribute name", describe(&t))),
         }
@@ -699,6 +706,13 @@ impl<'a> Parser<'a> {
         let at = self.tok_start()?;
         let e = self.primary()?;
         if !self.is(".")? {
+            // `f or` applies `f` to the variable `or`, which Nix accepts
+            // for an old nixpkgs function of that name.
+            if self.is("or")? {
+                let (_, or_at) = self.next()?;
+                let or = Ast::Var(Sym::new("or"), self.mkpos(or_at));
+                return Ok(Ast::App(Box::new(e), vec![or], self.mkpos(at)));
+            }
             return Ok(e);
         }
         self.next()?;
