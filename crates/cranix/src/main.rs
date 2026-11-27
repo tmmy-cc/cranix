@@ -35,6 +35,7 @@ commands:
   eval [FILE | --expr E | INSTALLABLE] [-A ATTR] [--json | --raw] [--lazy]
   instantiate [FILE | --expr E] [-A ATTR]       write .drv files, print their paths
   build [FILE | --expr E | INSTALLABLE] [-A ATTR] [-o LINK | --no-link] [-j N] [-L] [--keep-failed]
+        [--upload-to URL [--upload-jobs N] [--upload-required]]   upload outputs as they are built
   run INSTALLABLE [-- ARGS]                      build and run a flake app or package
   shell INSTALLABLE... [-c CMD ARGS]             shell with the packages on PATH
   develop [INSTALLABLE] [-c CMD ARGS]            shell with a derivation's build environment
