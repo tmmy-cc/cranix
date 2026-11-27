@@ -33,7 +33,7 @@ benchmark section says otherwise.
 | Memory management      | Boehm GC                    | Boehm GC                     | reference counting                     | reference counting, cycles live until exit |
 | I/O during evaluation  | synchronous                 | synchronous                  | VM suspends into async I/O             | synchronous                             |
 | Store model            | `/nix/store` + SQLite DB    | same as Nix                  | BLAKE3 Merkle DAG (castore) + PathInfo service; NARs computed on demand | `/nix/store` layout + one metadata file per path |
-| Store backends         | local, daemon, binary caches, SSH, S3 | same as Nix          | pluggable (memory, files, object storage, gRPC) | local, daemon, `file://`/`http(s)://` binary caches, SSH |
+| Store backends         | local, daemon, binary caches, SSH, S3 | same as Nix          | pluggable (memory, files, object storage, gRPC) | local, daemon, `file://`/`http(s)://` binary caches, GitLab and GitHub package registries, SSH |
 | Daemon protocol        | yes                         | yes, compatible              | partial (via `nix-compat`)             | yes, compatible (server and client, 1.37) |
 | Builder                | goal/worker state machine, sandbox | same, sandbox             | separate build service (OCI / bubblewrap) | thread-pool scheduler, sandbox (macOS `sandbox-exec`, Linux namespaces), remote builders |
 | Substituters / caches  | yes, signed                 | yes                          | yes (serves and consumes NAR/narinfo)  | yes, signed                             |
@@ -138,6 +138,10 @@ Nix's single-process, single-machine shape:
   HTTP, with NARs compressed like cache.nixos.org's, together with the
   signed realisations of content-addressed outputs, which substitution
   checks against `trusted-public-keys`.
+* The package registry of a GitLab or GitHub project is a binary cache
+  (`gitlab://`, `github://`), with separate read and write tokens and NARs
+  grouped into registry packages by hash, by name or by release;
+  `cache serve` exposes such a cache over plain HTTP for Nix.
 
 ### Measured against Nix 2.24
 

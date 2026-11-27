@@ -32,7 +32,7 @@ bootstrap graph hashes identically.
 | Crate          | Lines | Contents |
 |----------------|------:|----------|
 | `cranix-core`   | 2.0k  | Hashes (md5/sha1/sha256/sha512), nix-base32, SRI, store paths and their fingerprints, streaming NAR writer/reader, derivations (ATerm, `hashDerivationModulo`, input-addressed, fixed-output, floating and impure outputs), narinfo and ed25519 signatures |
-| `cranix-store`  | 5.2k  | Local store, path metadata, `add_text`/`add_path`, reference scanning, closures, GC roots and collection, verification, parallel builder, build sandbox, realisations of content-addressed outputs, binary caches and substitution, settings |
+| `cranix-store`  | 5.8k  | Local store, path metadata, `add_text`/`add_path`, reference scanning, closures, GC roots and collection, verification, parallel builder, build sandbox, realisations of content-addressed outputs, binary caches (files, HTTP, GitLab and GitHub registries) and substitution, settings |
 | `cranix-eval`   | 7.8k  | Lexer/parser, scope-resolving compiler, lazy evaluator, ~120 builtins including `fromTOML` and `toXML`, `derivationStrict`, printing, JSON, error rendering with source snippets and traces |
 | `cranix-daemon` | 3.8k  | Nix worker protocol (up to 1.37) and serve protocol (2.7): `cranix daemon`, `cranix store serve`, clients for `unix://`, `ssh-ng://` and `ssh://` stores, remote builders |
 | `cranix-fetchers` | 3.0k | Fetchers for files, tarballs, paths, Git and GitHub/GitLab/SourceHut, the fetcher cache, flake registries |
@@ -142,6 +142,51 @@ store registers, from its own builds or from daemon clients, are signed
 with `secret-key-files`, and `copy --to` uploads the realisations of the
 outputs it copies, signed with the copy keys.
 
+**Registry caches.** The package registry of a GitLab or GitHub project
+serves as a binary cache:
+
+* `gitlab://HOST/GROUP/PROJECT` keeps files in the project's GitLab generic
+  package registry (`https://HOST/api/v4/projects/GROUP%2FPROJECT/packages/generic/PACKAGE/VERSION/FILE`).
+* `github://OWNER/REPO` keeps them in the GitHub container registry
+  (`ghcr.io/OWNER/REPO/PACKAGE`). Each file is an OCI manifest tagged
+  `VERSION.FILE` whose one layer is the file, stored as a content-addressed
+  blob. `registry=URL` names another OCI registry.
+
+Files are grouped into registry packages. A narinfo goes to
+`nix-<first two characters of its hash>`, realisations and logs to
+`nix-meta`, and NARs by the `layout` parameter: `hash` (the default, by
+the first two characters of the file hash, beside the narinfos), `name`
+(one package per store path name without its version, such as `hello`) or
+`group=NAME` (one package for everything, for example all a release
+needs). The package of a NAR is part of the `URL:` in its narinfo, so
+reading needs no layout. `version` (default `v1`) is the package version
+(GitLab) or tag prefix (GitHub). `nix-cache-info` is answered locally
+(`StoreDir: /nix/store`, or `store-dir=DIR`). File names are checked before
+any request is sent: segments of `[A-Za-z0-9._+:!=-]`, none empty, `.` or
+`..`; other characters are escaped in registry file names and tags.
+
+Reads (`GET`, `HEAD`) send the read token and uploads the write token, each
+standing in for the other when only one is given: `read-token-file=FILE`,
+`write-token-file=FILE` or `token-file=FILE` for both, otherwise the
+`access-tokens` entry of the host (`gitlab.example.com=TOKEN`, or
+`github.com=TOKEN` for ghcr.io). GitLab tokens go in `PRIVATE-TOKEN`
+(`Deploy-Token` for `gldt-` tokens, `JOB-TOKEN` with `token-type=job`).
+For GitHub the token is exchanged at the registry's token endpoint for a
+bearer token per repository. Messages hide all tokens.
+`scheme=http` talks plain HTTP to a GitLab host.
+
+```sh
+cranix copy --to 'gitlab://gitlab.example.com/group/project?write-token-file=/run/secrets/gl&secret-key=/path/to/key' ./result
+cranix --option extra-substituters 'github://owner/repo?layout=name' build .#hello
+cranix cache serve --listen 127.0.0.1:5000 'gitlab://gitlab.example.com/group/project?token-file=/run/secrets/gl'
+nix copy --from http://127.0.0.1:5000 /nix/store/...-hello-2.12.1
+```
+
+`cache serve [--listen ADDR:PORT] URL` answers `GET` and `HEAD` for the
+files of any cache URL cranix opens, so that Nix and other HTTP clients read
+a registry cache. It prints its URL (`http://127.0.0.1:5000` by default)
+and streams NARs as they arrive.
+
 **Settings.** One configuration value, in `nix.conf` syntax, feeds builds,
 substitution, fetchers, experimental features, remote builders and the
 daemon. It is read in Nix's order, later sources winning:
@@ -243,7 +288,8 @@ Commands: `eval` (`--json`, `--raw`, `--lazy`), `instantiate`, `build`
 `hash path|file|convert`, `nar dump|restore`, and
 `store add|path-info|sign|closure|ls|verify|gc|serve` (`path-info --json -r
 --closure-size`, also against a cache with `--store URL`), `copy --to URL` and
-`copy --from URL` for `file://` and `http(s)://` caches (uploads with `PUT`), and
+`copy --from URL` for `file://`, `http(s)://`, `gitlab://` and `github://`
+caches (uploads with `PUT`), `cache serve`, and
 `key generate-secret|convert-secret-to-public`, `config show [NAME]`, and
 `daemon` (`--stdio`, `--socket`, `--force-trusted`, `--force-untrusted`).
 Global options: `--store`, `-I`, `--arg`, `--argstr`, `--pure`,
@@ -360,6 +406,15 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
   `cache-server` example of `cranix-store`) and reads it back with
   `nix path-info`, `nix store verify` and `nix copy`. The same server backs
   the `http_cache` integration test run by `cargo test`.
+* `tests/registry-cache.sh` copies a closure to a `gitlab://` and a
+  `github://` cache on a fake registry (the `registry-server` example of
+  `cranix-store`), reads it back with `copy --from`, and with `nix path-info`,
+  `nix store verify` and `nix copy` through `cache serve`. The same fake
+  registry, which checks read and write tokens and the services' naming
+  rules, backs the `registry_cache` integration test.
+* `tests/registry-live.sh` runs the same round trip against real GitLab and
+  GitHub projects named by `CRANIX_TEST_GITLAB` and `CRANIX_TEST_GITHUB`, with
+  tokens from `CRANIX_TEST_GITLAB_TOKEN_FILE` and `CRANIX_TEST_GITHUB_TOKEN_FILE`.
 * `cargo test` also builds it sandboxed, and builds the derivations of
   `tests/sandbox.nix` to show that a sandboxed builder can neither read a
   host file outside its closure nor reach the host's network, that a

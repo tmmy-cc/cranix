@@ -246,6 +246,11 @@
                                 <p>Substitution from <code>file://</code> and HTTP caches with signed <code>.narinfo</code> files, <code>copy</code> to caches Nix reads, and signing keys.</p>
                             </li>
                             <li class="feature reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7l8-4 8 4v10l-8 4-8-4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M4 7l8 4 8-4M12 11v10" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+                                <h3>Registry caches</h3>
+                                <p>Binary caches in the GitLab and GitHub package registries of a project, next to its code, and <code>cache serve</code> so Nix reads them too.</p>
+                            </li>
+                            <li class="feature reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 4h8v6H3zM13 14h8v6h-8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M7 10v4h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                                 <h3>Daemon and remote builders</h3>
                                 <p>The Nix daemon protocol in both directions: Nix clients can use a cranix store, and cranix can use a Nix daemon. Builds go to other machines over <code>ssh-ng://</code> or <code>ssh://</code>.</p>
@@ -288,8 +293,8 @@
                             </li>
                             <li class="feature feature-planned reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 18h10a4 4 0 0 0 .6-8A6 6 0 0 0 6 11a3.5 3.5 0 0 0 1 7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M12 16v-5m-2.5 2.5L12 11l2.5 2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                                <h3>Registry caches and upload while building</h3>
-                                <p>Binary caches in GitLab and GitHub package registries, filled as each output is finished instead of after the whole build.</p>
+                                <h3>Upload while building</h3>
+                                <p>Binary caches filled as each output is finished instead of after the whole build.</p>
                             </li>
                             <li class="feature feature-planned reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M13 3 5 13h6l-1 8 8-10h-6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M13 3 5 13h6z" fill="currentColor" opacity="0.5"/></svg>
