@@ -53,6 +53,13 @@ can only come from `with` are looked up by name at run time. Undefined
 variables are reported before evaluation starts. Nested attribute paths
 (`a.b.c = 1; a.b.d = 2;`) are merged at compile time.
 
+Parsed files are cached on disk under `$XDG_CACHE_HOME/cranix/ast` (default
+`~/.cache/cranix/ast`) in a compact binary form with a shared string table,
+keyed by the SHA-256 of the cranix version, the source text and the
+directories that path literals resolve against. A file read again is decoded
+instead of lexed and parsed; entries are written by a background thread, and
+a damaged entry is parsed again. `CRANIX_AST_CACHE=0` turns the cache off.
+
 Compiled expressions are leaked to `&'static`, so a thunk is just
 `(&'static Expr, Rc<Env>)`. Values are a 16-byte enum of immediates and `Rc`
 pointers; attribute sets are sorted vectors keyed by interned symbols
