@@ -164,6 +164,9 @@ const NIX_SETTINGS: &[(&str, Kind)] = {
         ("trusted-substituters", List),
         ("trusted-users", List),
         ("upgrade-nix-store-path-url", Value),
+        ("upload-jobs", Value),
+        ("upload-required", Bool),
+        ("upload-to", Value),
         ("use-case-hack", Bool),
         ("use-cgroups", Bool),
         ("use-registries", Bool),
@@ -231,6 +234,12 @@ pub struct Settings {
     /// The build settings; `system` is also `builtins.currentSystem`.
     pub build: BuildOptions,
     pub fetch: FetchSettings,
+    /// The cache builds upload each output to; empty for none.
+    pub upload_to: String,
+    /// How many uploads run at once.
+    pub upload_jobs: usize,
+    /// Whether a failed upload fails the build.
+    pub upload_required: bool,
 }
 
 impl Default for Settings {
@@ -252,6 +261,9 @@ impl Default for Settings {
             allowed_users: vec!["*".into()],
             build: BuildOptions::default(),
             fetch: FetchSettings::default(),
+            upload_to: String::new(),
+            upload_jobs: 4,
+            upload_required: false,
         }
     }
 }
@@ -363,6 +375,9 @@ impl Settings {
             "narinfo-cache-positive-ttl" => self.narinfo_cache_positive_ttl = parse_int(name, value)?,
             "narinfo-cache-negative-ttl" => self.narinfo_cache_negative_ttl = parse_int(name, value)?,
             "netrc-file" => self.netrc_file = value.to_string(),
+            "upload-to" => self.upload_to = value.to_string(),
+            "upload-jobs" => self.upload_jobs = parse_int(name, value)?,
+            "upload-required" => self.upload_required = parse_bool(name, value)?,
             "download-attempts" => self.download_attempts = parse_int(name, value)?,
             "builders" => self.builders = value.to_string(),
             "system" => self.build.system = value.to_string(),
@@ -399,6 +414,9 @@ impl Settings {
             "narinfo-cache-positive-ttl" => self.narinfo_cache_positive_ttl.to_string(),
             "narinfo-cache-negative-ttl" => self.narinfo_cache_negative_ttl.to_string(),
             "netrc-file" => self.netrc_file.clone(),
+            "upload-to" => self.upload_to.clone(),
+            "upload-jobs" => self.upload_jobs.to_string(),
+            "upload-required" => self.upload_required.to_string(),
             "download-attempts" => self.download_attempts.to_string(),
             "builders" => self.builders.clone(),
             "system" => b.system.clone(),
@@ -430,6 +448,7 @@ impl Settings {
     pub fn get_shown(&self, name: &str) -> Option<String> {
         match name {
             "substituters" => Some(self.substituters.iter().map(|u| redact_url(u)).collect::<Vec<_>>().join(" ")),
+            "upload-to" => Some(redact_url(&self.upload_to)),
             "access-tokens" => Some(self.fetch.access_tokens.keys().map(|h| format!("{h}=<redacted>")).collect::<Vec<_>>().join(" ")),
             _ => self.get(name),
         }
@@ -494,7 +513,9 @@ impl Settings {
 
     /// The build options these settings describe.
     pub fn build_options(&self) -> BuildOptions {
-        self.build.clone()
+        let mut b = self.build.clone();
+        b.upload = crate::upload::UploadTarget::from_settings(self);
+        b
     }
 }
 

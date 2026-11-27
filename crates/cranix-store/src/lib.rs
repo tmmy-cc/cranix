@@ -19,6 +19,7 @@ pub mod realisation;
 pub mod refs;
 pub mod registry;
 pub mod substitute;
+pub mod upload;
 pub mod sandbox;
 
 use std::collections::{BTreeSet, HashMap};

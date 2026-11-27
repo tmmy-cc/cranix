@@ -17,6 +17,7 @@ use cranix_core::{nar, Derivation, FileIngestion, StorePath};
 
 use crate::sandbox::{self, Sandbox, SandboxMode};
 use crate::nar_import::PathLock;
+use crate::upload::Uploads;
 use crate::{canonicalise, fsutil, refs, PathInfo, Result, Store};
 
 #[derive(Clone, Debug)]
@@ -57,6 +58,8 @@ pub struct BuildOptions {
     pub impure_derivations: bool,
     /// Whether realising may fetch outputs from the store's substituters.
     pub substitute: bool,
+    /// The cache each output is uploaded to as soon as it is built.
+    pub upload: Option<Arc<crate::upload::UploadTarget>>,
 }
 
 /// Receives the activity of builds: one `start`, the builder's output
@@ -166,6 +169,7 @@ impl Default for BuildOptions {
             ca_derivations: false,
             impure_derivations: false,
             substitute: true,
+            upload: None,
         }
     }
 }
@@ -299,10 +303,28 @@ impl Store {
 
     /// Builds `drvs` and everything they need. Returns each derivation's
     /// output paths.
+    /// With `opts.upload`, each built output is uploaded with its closure
+    /// while later builds run, and the closures of all outputs of `drvs`
+    /// are in the cache when this returns.
     pub fn realise(
         &self,
         drvs: &[StorePath],
         opts: &BuildOptions,
+    ) -> Result<BTreeMap<StorePath, BTreeMap<String, StorePath>>> {
+        crate::upload::with_uploads(self, opts, |up| {
+            let out = self.realise_with(drvs, opts, up)?;
+            if let Some(up) = up {
+                up.submit(out.values().flat_map(|m| m.values()));
+            }
+            Ok(out)
+        })
+    }
+
+    fn realise_with(
+        &self,
+        drvs: &[StorePath],
+        opts: &BuildOptions,
+        up: Option<&Uploads>,
     ) -> Result<BTreeMap<StorePath, BTreeMap<String, StorePath>>> {
         // Discover the subgraph of derivations that have missing outputs.
         // Derivations whose outputs can all be substituted are fetched
@@ -382,7 +404,7 @@ impl Store {
             if !self.can_build() && opts.hook.is_none() {
                 return Err(self.cannot_build());
             }
-            self.run_scheduler(&loaded, &needed, opts, &built)?;
+            self.run_scheduler(&loaded, &needed, opts, &built, up)?;
         }
 
         let built = built.into_inner().unwrap();
@@ -410,15 +432,22 @@ impl Store {
     /// all be listed in `input_srcs` and be valid.
     /// Returns the output paths.
     pub fn build_basic(&self, drv_path: &StorePath, drv: &Derivation, opts: &BuildOptions) -> Result<BTreeMap<String, StorePath>> {
-        if !self.missing_outputs(drv)? {
-            return self.output_paths(drv_path, drv);
-        }
-        if !self.can_build() && opts.hook.is_none() {
-            return Err(self.cannot_build());
-        }
-        let built = Mutex::new(HashMap::new());
-        self.build_one(drv_path, drv, &HashMap::new(), opts, "", &built)?;
-        Ok(built.into_inner().unwrap().remove(drv_path).unwrap_or_default())
+        crate::upload::with_uploads(self, opts, |up| {
+            let out = if !self.missing_outputs(drv)? {
+                self.output_paths(drv_path, drv)?
+            } else {
+                if !self.can_build() && opts.hook.is_none() {
+                    return Err(self.cannot_build());
+                }
+                let built = Mutex::new(HashMap::new());
+                self.build_one(drv_path, drv, &HashMap::new(), opts, "", &built, up)?;
+                built.into_inner().unwrap().remove(drv_path).unwrap_or_default()
+            };
+            if let Some(up) = up {
+                up.submit(out.values());
+            }
+            Ok(out)
+        })
     }
 
     fn run_scheduler(
@@ -427,6 +456,7 @@ impl Store {
         needed: &BTreeSet<StorePath>,
         opts: &BuildOptions,
         built: &Built,
+        up: Option<&Uploads>,
     ) -> Result<()> {
         struct Sched {
             waiting: HashMap<StorePath, usize>,
@@ -482,7 +512,7 @@ impl Store {
                         return;
                     };
                     let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    let r = self.build_one(&p, &drvs[&p], drvs, opts, &format!(" ({n}/{total})"), built);
+                    let r = self.build_one(&p, &drvs[&p], drvs, opts, &format!(" ({n}/{total})"), built, up);
                     let mut g = state.lock().unwrap();
                     g.running -= 1;
                     match r {
@@ -518,12 +548,16 @@ impl Store {
         opts: &BuildOptions,
         progress: &str,
         built: &Built,
+        up: Option<&Uploads>,
     ) -> Result<()> {
         let outputs = if needs_resolution(drv) {
             self.build_resolved(drv_path, drv, all, opts, built, progress)?
         } else {
             self.build_derivation(drv_path, drv, all, opts, progress)?
         };
+        if let Some(up) = up {
+            up.submit(outputs.values());
+        }
         built.lock().unwrap().insert(drv_path.clone(), outputs);
         Ok(())
     }
