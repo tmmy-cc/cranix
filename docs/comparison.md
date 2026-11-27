@@ -154,6 +154,8 @@ Nix's single-process, single-machine shape:
   licences from `meta`, ecosystem purls, the crates and Go modules its
   derivations vendor, and optionally what Go and Rust binaries record; Nix
   has no SBOM command.
+* `cranix vuln-scan` checks such an SBOM against OSV and NVD data cached
+  locally, with OpenVEX assessments and exit codes for CI.
 
 ### Measured against Nix 2.24
 

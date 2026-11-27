@@ -293,6 +293,56 @@ cranix sbom .#nixosConfigurations.target --build-time --format spdx -o system.sp
 cranix sbom lock ./Cargo.lock -o deps.cdx.json
 ```
 
+**Vulnerability scanning.** `cranix vuln-scan SBOM` checks a CycloneDX
+SBOM from `cranix sbom` against a local database of OSV advisories and NVD
+CVEs and fails while a finding that nobody assessed remains:
+
+```sh
+cranix vuln-db update                      # OSV (PyPI, crates.io, npm, Go) and the NVD feeds
+cranix sbom .#app -o app.cdx.json
+cranix vuln-scan app.cdx.json --vex release.vex.json --fail-on high --max-db-age 7d --report findings.json
+```
+
+* The database lives in `~/.cache/cranix/vulndb` (`--db DIR`) as compact
+  indexes with the time of the update. `vuln-db update` downloads the OSV
+  dumps of `--ecosystems` and the NVD 2.0 feeds of `--nvd-years` (or
+  `--no-nvd`); `vuln-db import --osv FILE|DIR|ZIP --nvd FEED.json[.gz]`
+  builds one from files already at hand, such as a mirror.
+* Ecosystem packages (`pkg:pypi`, `pkg:cargo`, `pkg:npm`, `pkg:golang`, also
+  the crates and Go modules nested in a package) are matched against the
+  OSV advisories of their ecosystem, by `introduced`/`fixed`/`last_affected`
+  ranges and listed versions.
+* Other components are matched against the NVD by CPE product: the product
+  of the component's CPE (or its name, with `-` and `_` treated alike), any
+  vendor unless the SBOM's CPE names one, and the release part of the
+  version (`5.2p37` is `5.2`) against the CVE's exact version or range.
+* A vulnerability appears once per product and version, listing every
+  component that maps to it.
+* `--vex FILE` (repeatable) reads OpenVEX 0.2.0 documents. A statement names
+  the vulnerability (or an alias), products by purl (a purl without a
+  version names every version) or `bom-ref`, and a status. `not_affected`
+  (which needs a `justification` or `impact_statement`) and `fixed` remove
+  the finding; `affected` and `under_investigation` keep it in the report
+  as assessed. Later statements win.
+* Exit codes: 0 when no unassessed finding of at least `--fail-on` severity
+  (`any`, the default, `low`, `medium`, `high`, `critical`) remains, 2 when
+  one does, 3 when the database is missing or older than `--max-db-age`
+  (`7d`, `12h`; without it, an older than a week database gives a
+  warning), 64 for wrong arguments. Findings without a score count at every
+  threshold. Severities are CVSS base scores (CVSS 3 vectors are computed),
+  else the advisory's own severity.
+* `--report FILE` writes the remaining findings as JSON: ID, aliases,
+  severity, score, what matched, the components and the assessment.
+
+Matching by product name has limits. A Nix package name that differs from
+the NVD product (`python3` against `python`, `gtk3` against
+`gtk+`) misses CVEs, and a name shared by unrelated software can match
+CVEs of the other one; a CPE in `meta.identifiers.cpe` with its vendor
+makes the match exact. Versions are compared by their release part, so
+Nix's patch levels and distribution patches are invisible: a package
+patched against a CVE still matches until a VEX statement says `fixed`.
+NVD ranges written for another versioning scheme compare loosely.
+
 **Settings.** One configuration value, in `nix.conf` syntax, feeds builds,
 substitution, fetchers, experimental features, remote builders and the
 daemon. It is read in Nix's order, later sources winning:
@@ -509,6 +559,12 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
   The unit tests round-trip a `flake.lock` written by Nix.
 * `tests/build.nix` exercises the builder: parallel leaves, references,
   `passAsFile`, multiple outputs and a fixed-output derivation.
+* The `vuln` integration test of the CLI imports a fixture database (OSV
+  records as files and a zip archive, an NVD feed) and checks matching by
+  ecosystem, by CPE product with and without vendor and by release part,
+  one finding per product, OpenVEX statements by purl, alias and
+  `bom-ref`, severity thresholds, the report and the exit codes 0, 2, 3
+  and 64.
 * `cranix-sbom` compares the CycloneDX and SPDX documents of a small SBOM
   with golden files, and the `sbom` integration test of the CLI builds a
   closure with `meta`, vendored crates and Go modules and checks the
