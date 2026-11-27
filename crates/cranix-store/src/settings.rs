@@ -251,6 +251,8 @@ pub struct Settings {
     pub upload_exclude_hosts: Vec<String>,
     pub upload_exclude_names: Vec<String>,
     pub upload_exclude_local: bool,
+    /// Whether flake installables use the evaluation cache.
+    pub eval_cache: bool,
 }
 
 impl Default for Settings {
@@ -280,6 +282,7 @@ impl Default for Settings {
             upload_exclude_hosts: Vec::new(),
             upload_exclude_names: Vec::new(),
             upload_exclude_local: false,
+            eval_cache: true,
         }
     }
 }
@@ -399,6 +402,7 @@ impl Settings {
             "upload-jobs" => self.upload_jobs = parse_int(name, value)?,
             "upload-required" => self.upload_required = parse_bool(name, value)?,
             "upload-exclude-local" => self.upload_exclude_local = parse_bool(name, value)?,
+            "eval-cache" => self.eval_cache = parse_bool(name, value)?,
             "download-attempts" => self.download_attempts = parse_int(name, value)?,
             "builders" => self.builders = value.to_string(),
             "system" => self.build.system = value.to_string(),
@@ -443,6 +447,7 @@ impl Settings {
             "upload-exclude-hosts" => list(&self.upload_exclude_hosts),
             "upload-exclude-names" => list(&self.upload_exclude_names),
             "upload-exclude-local" => self.upload_exclude_local.to_string(),
+            "eval-cache" => self.eval_cache.to_string(),
             "download-attempts" => self.download_attempts.to_string(),
             "builders" => self.builders.clone(),
             "system" => b.system.clone(),
