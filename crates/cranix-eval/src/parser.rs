@@ -114,7 +114,8 @@ impl<'a> Parser<'a> {
                 i += 1;
             }
             if i < s.len() && s[i] == b'#' {
-                while i < s.len() && s[i] != b'\n' {
+                // A line comment ends at LF, CR or CRLF.
+                while i < s.len() && s[i] != b'\n' && s[i] != b'\r' {
                     i += 1;
                 }
             } else if s[i..].starts_with(b"/*") {
@@ -384,9 +385,13 @@ impl<'a> Parser<'a> {
                 self.next()?;
                 self.expect("{")?;
                 let formals = self.formals()?;
+                let arg = Sym::new(&name);
+                if formals.entries.iter().any(|(s, _)| *s == arg) {
+                    return self.err(start, format!("duplicate formal function argument '{name}'"));
+                }
                 self.expect(":")?;
                 let body = self.expr()?;
-                Ok(Ast::Lambda { arg: Some(Sym::new(&name)), formals: Some(formals), body: Box::new(body), pos })
+                Ok(Ast::Lambda { arg: Some(arg), formals: Some(formals), body: Box::new(body), pos })
             }
             (Tok::Sym("{"), _) if self.looks_like_formals()? => {
                 self.next()?;
@@ -395,7 +400,13 @@ impl<'a> Parser<'a> {
                 if self.is("@")? {
                     self.next()?;
                     match self.next()? {
-                        (Tok::Id(n), _) => arg = Some(Sym::new(&n)),
+                        (Tok::Id(n), _) => {
+                            let sym = Sym::new(&n);
+                            if formals.entries.iter().any(|(s, _)| *s == sym) {
+                                return self.err(start, format!("duplicate formal function argument '{n}'"));
+                            }
+                            arg = Some(sym)
+                        }
                         (t, at) => return self.err(at, format!("syntax error, unexpected {}", describe(&t))),
                     }
                 }
