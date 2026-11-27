@@ -111,6 +111,8 @@ struct Tree {
     statics: BTreeMap<Sym, Node>,
     dynamics: Vec<(Ast, Node)>,
     sources: Vec<Ast>,
+    /// A `rec` set that later definitions of the same name merge into.
+    rec: bool,
 }
 
 fn dup(name: &Sym, pos: Pos, prev: Option<&Node>) -> CompileError {
@@ -184,7 +186,13 @@ impl Tree {
         let prev_pos = existing.pos();
         let mut merged = match existing {
             Node::Nested(t, p) => (t, p),
-            Node::Leaf(Ast::Attrs { rec: false, bindings, .. }, p) => (Tree::from_bindings(bindings)?, p),
+            // A recursive set stays recursive, and what merges into it can
+            // refer to its attributes.
+            Node::Leaf(Ast::Attrs { rec, bindings, .. }, p) => {
+                let mut t = Tree::from_bindings(bindings)?;
+                t.rec = rec;
+                (t, p)
+            }
             e => return Err(dup(&name, pos, Some(&e))),
         };
         let incoming = match node {
@@ -415,6 +423,7 @@ impl Compiler {
                 let src = leak(Expr::Local { up: 0, idx: base + i as u32 });
                 leak(Expr::Select { e: src, path: Box::new([Key::Static(n)]), default: None, pos })
             }
+            Node::Nested(tree, _) if tree.rec => self.rec_attrs(tree)?,
             Node::Nested(tree, _) => self.attrs(tree)?,
         })
     }
@@ -478,9 +487,9 @@ impl Compiler {
     }
 
     fn rec_attrs(&mut self, tree: Tree) -> R<&'static Expr> {
-        let Tree { statics, dynamics: dyn_asts, sources } = tree;
+        let Tree { statics, dynamics: dyn_asts, sources, .. } = tree;
         let positions = pos_table(statics.iter().map(|(k, v)| (k.clone(), v.pos())).collect());
-        let (slots, names) = self.rec_scope(Tree { statics, dynamics: Vec::new(), sources })?;
+        let (slots, names) = self.rec_scope(Tree { statics, dynamics: Vec::new(), sources, rec: true })?;
         let result = (|| {
             let statics = names
                 .into_iter()
