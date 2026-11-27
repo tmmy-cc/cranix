@@ -1,6 +1,5 @@
 # Language tests cranix does not pass yet; tests/langtest.py --update-known rewrites this list.
 nix/eval-fail-set-override
-nix/eval-okay-attrs5
 nix/eval-okay-attrs6
 nix/eval-okay-context-introspection
 nix/eval-okay-fromTOML-timestamps
@@ -20,7 +19,6 @@ snix/eval-okay-builtins-replace-strings-propagate-catchable
 snix/eval-okay-builtins-split
 snix/eval-okay-identifier-formatting
 snix/eval-okay-import-display
-snix/eval-okay-let-identifiers
 snix/eval-okay-merge-nested-rec-attrs
 snix/eval-okay-observable-eval-cache
 snix/eval-okay-value-display
