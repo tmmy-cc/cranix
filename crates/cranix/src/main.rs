@@ -13,10 +13,11 @@ use cranix_eval::{print, Eval, Options, RenderOptions, Value};
 use cranix_store::binary_cache::{read_secret_keys, redact_url, BinaryCache};
 use cranix_store::build::{default_root, BuildOptions};
 use cranix_store::settings::{Kind, Settings};
-use cranix_store::substitute::{open_cache, trusted_keys, Substituters};
+use cranix_store::substitute::{open_cache, Substituters};
 use cranix_store::Store;
 
 mod cache_serve;
+mod copy_cmd;
 mod remote;
 mod flake_cmd;
 
@@ -49,6 +50,8 @@ commands:
   store path-info [--json] [-r] [-S | --closure-size] PATH...
   store sign -k KEYFILE [-r] PATH...            add signatures to local paths
   copy --to URL PATH... | copy --from URL PATH...   copy closures to or from a binary cache
+        [--to-nars DIR] [--dry-run] [--type TYPES] [--exclude-host GLOB] [--exclude-name GLOB]
+        [--exclude-class system|test] [--exclude-local]   choose what is copied
   cache serve [--listen ADDR:PORT] URL           serve a binary cache (e.g. gitlab://, github://) over HTTP
   key generate-secret --key-name NAME | key convert-secret-to-public < KEY
   config show [--show-secrets] [NAME]            print the settings in effect
@@ -298,7 +301,7 @@ fn run() -> Result<(), String> {
         "store" if args.first().map(String::as_str) == Some("serve") => serve(&cli, &args[1..]),
         "--serve" => serve(&cli, &args),
         "store" => cmd_store(&cli, &args),
-        "copy" => cmd_copy(&cli, &args),
+        "copy" => copy_cmd::cmd_copy(&cli, &args),
         "cache" => cache_serve::cmd_cache(&cli.settings, &args),
         "key" => cmd_key(&args),
         "config" => cmd_config(&cli, &args),
@@ -1057,93 +1060,6 @@ fn cmd_cache_path_info(cli: &Cli, url: &str, args: &[String]) -> Result<(), Stri
         writeln!(out, "{}", serde_json::Value::Object(json)).ok();
     }
     Ok(())
-}
-
-/// `copy --to URL` uploads closures from the local store; `copy --from
-/// URL` substitutes closures from a cache into it.
-fn cmd_copy(cli: &Cli, args: &[String]) -> Result<(), String> {
-    let mut to = None;
-    let mut from = None;
-    let mut check_sigs = cli.settings.require_sigs;
-    let mut paths = Vec::new();
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--to" => to = Some(it.next().ok_or("--to requires an argument")?.clone()),
-            "--from" => from = Some(it.next().ok_or("--from requires an argument")?.clone()),
-            "--no-check-sigs" => check_sigs = false,
-            f if f.starts_with('-') => return Err(format!("copy: unknown flag '{f}'")),
-            p => paths.push(p.to_string()),
-        }
-    }
-    let mut store = open_local_store(cli)?;
-    let roots: Vec<StorePath> = paths.iter().map(|p| parse_store_path(&store.dir, p)).collect::<Result<_, _>>()?;
-    match (to, from) {
-        (Some(to), None) => {
-            let s = &cli.settings;
-            let cache = open_cache(&to, s)?;
-            // Uploads replace what the store remembers about this cache.
-            let disk = store.narinfo_cache(&cache.url, s.narinfo_cache_positive_ttl, s.narinfo_cache_negative_ttl);
-            let cache = cache.with_narinfo_cache(disk);
-            cache.init_for_writing(&store.dir)?;
-            let mut key_files: Vec<&str> = cli.settings.secret_key_files.iter().map(String::as_str).collect();
-            key_files.extend(cache.param("secret-key"));
-            let keys = read_secret_keys(key_files)?;
-            for r in &roots {
-                if !store.is_valid(r) {
-                    return Err(format!("path '{}' is not valid", store.dir.print(r)));
-                }
-            }
-            // References are uploaded before the paths that refer to them.
-            let mut order = Vec::new();
-            let mut seen = BTreeSet::new();
-            fn visit(store: &Store, p: &StorePath, seen: &mut BTreeSet<StorePath>, order: &mut Vec<StorePath>) -> Result<(), String> {
-                if !seen.insert(p.clone()) {
-                    return Ok(());
-                }
-                let info = store.query_info(p)?.ok_or_else(|| format!("path '{}' is not valid", store.dir.print(p)))?;
-                for r in info.references.iter().filter(|r| *r != p) {
-                    visit(store, r, seen, order)?;
-                }
-                order.push(p.clone());
-                Ok(())
-            }
-            for r in &roots {
-                visit(&store, r, &mut seen, &mut order)?;
-            }
-            let mut copied = 0;
-            for p in &order {
-                if cache.file_exists(&format!("{}.narinfo", p.hash_part()))? {
-                    continue;
-                }
-                eprintln!("copying path '{}' to '{}'...", store.dir.print(p), cache.shown());
-                let info = store.query_info(p)?.ok_or_else(|| format!("path '{}' is not valid", store.dir.print(p)))?;
-                cache.add_path(&store.dir, &store.real_path(p), &info, &store.query_sigs(p)?, &keys)?;
-                copied += 1;
-            }
-            // Realisations of the copied outputs follow their paths.
-            for r in store.realisations_of(&seen)? {
-                cache.add_realisation(&r, &keys)?;
-            }
-            eprintln!("copied {copied} paths");
-            Ok(())
-        }
-        (None, Some(from)) => {
-            let s = &cli.settings;
-            let cache = open_cache(&from, s)?;
-            let keys = trusted_keys(&s.trusted_public_keys);
-            store.set_substituters(
-                Substituters::new(vec![cache], keys, check_sigs, s.max_substitution_jobs)
-                    .narinfo_ttls(s.narinfo_cache_positive_ttl, s.narinfo_cache_negative_ttl),
-            );
-            let failed = store.substitute_paths(&roots)?;
-            if let Some(p) = failed.first() {
-                return Err(format!("path '{}' is not available from '{}'", store.dir.print(p), redact_url(&from)));
-            }
-            Ok(())
-        }
-        _ => Err("usage: cranix copy --to URL PATH... | copy --from URL PATH...".into()),
-    }
 }
 
 /// `config show [--show-secrets] [NAME]`: the settings in effect, as
