@@ -6,6 +6,7 @@
 //! to curl on its standard input, so tokens never show up in the process
 //! list.
 
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -30,12 +31,24 @@ impl Default for HttpClient {
     }
 }
 
-/// The status and body of a finished request.
+/// The status, headers and body of a finished request.
 #[derive(Debug)]
 pub struct Response {
     pub status: u16,
     pub body: Vec<u8>,
+    /// The headers of the last response, by lower-case name.
+    pub headers: BTreeMap<String, Vec<String>>,
 }
+
+impl Response {
+    /// The first value of the header `name` (lower case).
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name).and_then(|v| v.first()).map(String::as_str)
+    }
+}
+
+/// Separates the body, the headers and the status in curl's output.
+const SEP: u8 = 0x1f;
 
 /// Whether a request that ended with `status` may succeed when repeated.
 /// Status 0 stands for a failure to connect or a connection that broke.
@@ -119,17 +132,20 @@ impl HttpClient {
     }
 
     /// Runs one request; the body comes back on curl's standard output,
-    /// followed by a line with the status.
+    /// followed by the headers as JSON and the status, each after a `SEP`.
     fn run_once(&self, args: &[&str], url: &str) -> Result<(Response, String)> {
         let mut cmd = self.command();
-        cmd.args(args).args(["--write-out", "\n%{http_code}"]).arg(url);
+        cmd.args(args).args(["--write-out", "\u{1f}%{header_json}\u{1f}%{http_code}"]).arg(url);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let out = self.spawn(cmd)?.wait_with_output().map_err(|e| format!("running curl: {e}"))?;
-        let body = out.stdout;
-        let split = body.iter().rposition(|&b| b == b'\n').unwrap_or(0);
-        let status = String::from_utf8_lossy(&body[split..]).trim().parse().unwrap_or(0);
+        let mut body = out.stdout;
+        let status_at = body.iter().rposition(|&b| b == SEP).unwrap_or(0);
+        let status = String::from_utf8_lossy(&body[status_at..]).trim_matches(|c: char| c == SEP as char || c.is_whitespace()).parse().unwrap_or(0);
+        let headers_at = body[..status_at].iter().rposition(|&b| b == SEP).unwrap_or(status_at);
+        let headers = parse_header_json(&body[(headers_at + 1).min(status_at)..status_at]);
+        body.truncate(headers_at);
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Ok((Response { status, body: body[..split].to_vec() }, err))
+        Ok((Response { status, body, headers }, err))
     }
 
     /// Runs a request, repeating it while it fails in a transient way.
@@ -172,6 +188,27 @@ impl HttpClient {
         }
     }
 
+    /// Sends a `method` request with `headers` added and, when given, the
+    /// file `body` as its body; any status comes back as a response.
+    pub fn send(&self, method: &str, url: &str, headers: &[(&str, &str)], body: Option<&Path>) -> Result<Response> {
+        let mut client = self.clone();
+        for (n, v) in headers {
+            client = client.header(n, v);
+        }
+        let src = match body {
+            Some(b) => Some(b.to_str().ok_or_else(|| format!("cannot upload '{}': its name is not UTF-8", b.display()))?),
+            None => None,
+        };
+        let mut args = match method {
+            "HEAD" => vec!["--head", "--output", "/dev/null"],
+            m => vec!["--request", m],
+        };
+        if let Some(src) = src {
+            args.extend(["--upload-file", src]);
+        }
+        client.run(if body.is_some() { "uploading to" } else { "requesting" }, &args, url)
+    }
+
     /// Streams the body of `url`, which must exist. curl itself retries
     /// transient failures that happen before the body starts.
     pub fn open(&self, url: &str) -> Result<Download> {
@@ -183,6 +220,22 @@ impl HttpClient {
         let stdout = child.stdout.take().unwrap();
         Ok(Download { child, stdout, url: url.to_string() })
     }
+}
+
+/// Parses curl's `%{header_json}`: an object of lower-case names to lists
+/// of values.
+fn parse_header_json(data: &[u8]) -> BTreeMap<String, Vec<String>> {
+    let Ok(serde_json::Value::Object(m)) = serde_json::from_slice(data) else { return BTreeMap::new() };
+    m.into_iter()
+        .map(|(k, v)| {
+            let vals = match v {
+                serde_json::Value::Array(a) => a.into_iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+                serde_json::Value::String(s) => vec![s],
+                _ => Vec::new(),
+            };
+            (k.to_ascii_lowercase(), vals)
+        })
+        .collect()
 }
 
 /// The body of a download; reports curl's failure once the stream ends.
