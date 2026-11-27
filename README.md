@@ -60,6 +60,13 @@ directories that path literals resolve against. A file read again is decoded
 instead of lexed and parsed; entries are written by a background thread, and
 a damaged entry is parsed again. `CRANIX_AST_CACHE=0` turns the cache off.
 
+`CRANIX_EVAL=vm` runs a bytecode VM in place of the tree walker. Each file,
+lambda body and thunk body is compiled on first use into a chunk of ops on
+a value stack; the ops share the tree walker's operations, and the error
+frames and positions the walker adds around a sub-expression are regions
+over its ops. Results, errors and traces are the same as the tree walker's;
+the VM is 4–7% slower on nixpkgs (see [docs/comparison.md](docs/comparison.md)).
+
 Compiled expressions are leaked to `&'static`, so a thunk is just
 `(&'static Expr, Rc<Env>)`. Values are a 16-byte enum of immediates and `Rc`
 pointers; attribute sets are sorted vectors keyed by interned symbols
