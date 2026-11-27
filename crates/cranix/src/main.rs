@@ -278,7 +278,9 @@ fn main() -> ExitCode {
     let _profiler = dhat::Profiler::new_heap();
     // Deeply recursive Nix code (nixpkgs fixpoints) needs a large stack.
     let child = std::thread::Builder::new().stack_size(1 << 30).spawn(run).expect("spawning main thread");
-    match child.join() {
+    let result = child.join();
+    cranix_eval::astcache::flush();
+    match result {
         Ok(Ok(())) => ExitCode::SUCCESS,
         Ok(Err(e)) => {
             eprintln!("{e}");
