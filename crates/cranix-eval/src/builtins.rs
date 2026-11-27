@@ -914,7 +914,10 @@ fn find_file(ev: &Eval, path: &Value, name: &str) -> R<Value> {
             None => String::new(),
         };
         let Some(p) = e.get_str("path") else { continue };
-        let entry = ev.force_plain_str(p)?;
+        let entry = match ev.force(p)? {
+            Value::Path(p) => p.to_string(),
+            _ => ev.force_plain_str(p)?,
+        };
         let rest = if prefix.is_empty() {
             Some(format!("/{name}"))
         } else if name == prefix {
