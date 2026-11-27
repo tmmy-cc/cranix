@@ -165,8 +165,13 @@ const NIX_SETTINGS: &[(&str, Kind)] = {
         ("trusted-users", List),
         ("upgrade-nix-store-path-url", Value),
         ("upload-jobs", Value),
+        ("upload-exclude-classes", List),
+        ("upload-exclude-hosts", List),
+        ("upload-exclude-local", Bool),
+        ("upload-exclude-names", List),
         ("upload-required", Bool),
         ("upload-to", Value),
+        ("upload-types", List),
         ("use-case-hack", Bool),
         ("use-cgroups", Bool),
         ("use-registries", Bool),
@@ -240,6 +245,12 @@ pub struct Settings {
     pub upload_jobs: usize,
     /// Whether a failed upload fails the build.
     pub upload_required: bool,
+    /// `upload-types`, `upload-exclude-classes`: names, checked when used.
+    pub upload_types: Vec<String>,
+    pub upload_exclude_classes: Vec<String>,
+    pub upload_exclude_hosts: Vec<String>,
+    pub upload_exclude_names: Vec<String>,
+    pub upload_exclude_local: bool,
 }
 
 impl Default for Settings {
@@ -264,6 +275,11 @@ impl Default for Settings {
             upload_to: String::new(),
             upload_jobs: 4,
             upload_required: false,
+            upload_types: Vec::new(),
+            upload_exclude_classes: Vec::new(),
+            upload_exclude_hosts: Vec::new(),
+            upload_exclude_names: Vec::new(),
+            upload_exclude_local: false,
         }
     }
 }
@@ -347,6 +363,10 @@ impl Settings {
             "trusted-public-keys" | "binary-cache-public-keys" => set_list(&mut self.trusted_public_keys, extra, value),
             "secret-key-files" => set_list(&mut self.secret_key_files, extra, value),
             "trusted-users" => set_list(&mut self.trusted_users, extra, value),
+            "upload-types" => set_list(&mut self.upload_types, extra, value),
+            "upload-exclude-classes" => set_list(&mut self.upload_exclude_classes, extra, value),
+            "upload-exclude-hosts" => set_list(&mut self.upload_exclude_hosts, extra, value),
+            "upload-exclude-names" => set_list(&mut self.upload_exclude_names, extra, value),
             "allowed-users" => set_list(&mut self.allowed_users, extra, value),
             "experimental-features" => {
                 if !extra {
@@ -378,6 +398,7 @@ impl Settings {
             "upload-to" => self.upload_to = value.to_string(),
             "upload-jobs" => self.upload_jobs = parse_int(name, value)?,
             "upload-required" => self.upload_required = parse_bool(name, value)?,
+            "upload-exclude-local" => self.upload_exclude_local = parse_bool(name, value)?,
             "download-attempts" => self.download_attempts = parse_int(name, value)?,
             "builders" => self.builders = value.to_string(),
             "system" => self.build.system = value.to_string(),
@@ -417,6 +438,11 @@ impl Settings {
             "upload-to" => self.upload_to.clone(),
             "upload-jobs" => self.upload_jobs.to_string(),
             "upload-required" => self.upload_required.to_string(),
+            "upload-types" => list(&self.upload_types),
+            "upload-exclude-classes" => list(&self.upload_exclude_classes),
+            "upload-exclude-hosts" => list(&self.upload_exclude_hosts),
+            "upload-exclude-names" => list(&self.upload_exclude_names),
+            "upload-exclude-local" => self.upload_exclude_local.to_string(),
             "download-attempts" => self.download_attempts.to_string(),
             "builders" => self.builders.clone(),
             "system" => b.system.clone(),
@@ -509,6 +535,17 @@ impl Settings {
     pub fn load() -> Result<Settings> {
         let texts: Vec<String> = ["CRANIX_CONFIG", "NIX_CONFIG"].iter().filter_map(|v| std::env::var(v).ok()).collect();
         Settings::load_from(&config_files(), &texts)
+    }
+
+    /// The filter of `upload-types` and the `upload-exclude-*` settings.
+    pub fn upload_filter(&self) -> Result<crate::select::Filter> {
+        let mut f = crate::select::Filter::default();
+        f.add_types(&self.upload_types.join(" "))?;
+        f.add_classes(&self.upload_exclude_classes.join(" "))?;
+        f.hosts = self.upload_exclude_hosts.clone();
+        f.names = self.upload_exclude_names.clone();
+        f.local = self.upload_exclude_local;
+        Ok(f)
     }
 
     /// The build options these settings describe.

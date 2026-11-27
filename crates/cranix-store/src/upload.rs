@@ -14,6 +14,7 @@ use cranix_core::StorePath;
 
 use crate::binary_cache::{read_secret_keys, BinaryCache};
 use crate::build::{log_message, BuildLogger};
+use crate::select::{Filter, Selector};
 use crate::settings::Settings;
 use crate::{Result, Store};
 
@@ -26,6 +27,8 @@ pub struct UploadTarget {
     pub jobs: usize,
     /// Whether a failed upload fails the build.
     pub required: bool,
+    /// What is uploaded and what is left out.
+    pub filter: Filter,
 }
 
 impl std::fmt::Debug for UploadTarget {
@@ -51,12 +54,24 @@ impl UploadTarget {
             Ok((c, k)) => (Ok(c), k),
             Err(e) => (Err(e), Vec::new()),
         };
-        Some(Arc::new(UploadTarget { cache, keys, jobs: s.upload_jobs.max(1), required: s.upload_required }))
+        let filter = s.upload_filter();
+        let cache = match &filter {
+            Ok(_) => cache,
+            Err(e) => Err(e.to_string()),
+        };
+        let filter = filter.unwrap_or_default();
+        Some(Arc::new(UploadTarget { cache, keys, jobs: s.upload_jobs.max(1), required: s.upload_required, filter }))
     }
 
     /// A target for `cache`, for callers that open the cache themselves.
     pub fn new(cache: BinaryCache, keys: Vec<SecretKey>, jobs: usize, required: bool) -> UploadTarget {
-        UploadTarget { cache: Ok(cache), keys, jobs: jobs.max(1), required }
+        UploadTarget { cache: Ok(cache), keys, jobs: jobs.max(1), required, filter: Filter::default() }
+    }
+
+    /// Uploads only what `filter` selects.
+    pub fn with_filter(mut self, filter: Filter) -> UploadTarget {
+        self.filter = filter;
+        self
     }
 }
 
@@ -67,6 +82,8 @@ enum Status {
     Ready,
     Done,
     Failed,
+    /// Left out by the filter.
+    Skipped,
 }
 
 #[derive(Default)]
@@ -77,6 +94,7 @@ struct State {
     running: usize,
     closed: bool,
     errors: Vec<String>,
+    skipped: usize,
 }
 
 /// The upload queue of one realisation.
@@ -85,6 +103,7 @@ pub(crate) struct Uploads<'a> {
     cache: &'a BinaryCache,
     target: &'a UploadTarget,
     logger: Option<Arc<dyn BuildLogger>>,
+    selector: Selector<'a>,
     state: Mutex<State>,
     cv: Condvar,
 }
@@ -93,7 +112,7 @@ impl<'a> Uploads<'a> {
     pub(crate) fn new(store: &'a Store, target: &'a UploadTarget, logger: Option<Arc<dyn BuildLogger>>) -> Result<Uploads<'a>> {
         let cache = target.cache.as_ref().map_err(|e| format!("cannot upload build outputs: {e}"))?;
         cache.init_for_writing(&store.dir)?;
-        Ok(Uploads { store, cache, target, logger, state: Mutex::new(State::default()), cv: Condvar::new() })
+        Ok(Uploads { store, cache, target, logger, selector: Selector::new(store, target.filter.clone()), state: Mutex::new(State::default()), cv: Condvar::new() })
     }
 
     pub(crate) fn jobs(&self) -> usize {
@@ -111,12 +130,45 @@ impl<'a> Uploads<'a> {
         self.cv.notify_all();
     }
 
+    /// Queues the built outputs `paths` whose type the filter takes.
+    pub(crate) fn submit_built<'p>(&self, paths: impl IntoIterator<Item = &'p StorePath>) {
+        let mut take = Vec::new();
+        for p in paths {
+            match self.selector.takes_output(p) {
+                Ok(true) => take.push(p.clone()),
+                Ok(false) => {}
+                Err(e) => self.state.lock().unwrap().errors.push(e),
+            }
+        }
+        self.submit(&take);
+    }
+
+    /// Queues what the filter takes from the derivation graph of `drvs`
+    /// and their `outputs`, once the build is done.
+    pub(crate) fn submit_final(&self, drvs: &[StorePath], outputs: &[StorePath]) {
+        let roots: Vec<StorePath> = if self.selector.filter.types.is_empty() { outputs.to_vec() } else { drvs.to_vec() };
+        match self.selector.candidates(&roots) {
+            Ok(c) => self.submit(c.iter().map(|(p, _)| p)),
+            Err(e) => self.state.lock().unwrap().errors.push(e),
+        }
+    }
+
     /// Adds `p` after its references, iteratively in post-order.
     fn add(&self, st: &mut State, root: &StorePath) -> Result<()> {
         let mut stack: Vec<(StorePath, Option<Vec<StorePath>>)> = vec![(root.clone(), None)];
         while let Some((p, refs)) = stack.pop() {
             if st.status.contains_key(&p) {
                 continue;
+            }
+            if refs.is_none() {
+                if let Some(why) = self.selector.reason(&p)? {
+                    if why != crate::select::Reason::Missing || p == *root {
+                        log_message(self.logger.as_ref(), &format!("leaving out '{}': {why}", self.store.dir.print(&p)));
+                    }
+                    st.status.insert(p, Status::Skipped);
+                    st.skipped += 1;
+                    continue;
+                }
             }
             let Some(refs) = refs else {
                 let info = self.store.query_info(&p)?.ok_or_else(|| format!("path '{}' is not valid", self.store.dir.print(&p)))?;
@@ -131,7 +183,7 @@ impl<'a> Uploads<'a> {
             for r in &refs {
                 match st.status.get(r) {
                     Some(Status::Done) => {}
-                    Some(Status::Failed) => failed = true,
+                    Some(Status::Failed | Status::Skipped) => failed = true,
                     _ => {
                         waiting += 1;
                         st.dependents.entry(r.clone()).or_default().push(p.clone());
@@ -139,7 +191,9 @@ impl<'a> Uploads<'a> {
                 }
             }
             if failed {
-                st.status.insert(p, Status::Failed);
+                log_message(self.logger.as_ref(), &format!("leaving out '{}': it refers to a path left out", self.store.dir.print(&p)));
+                st.status.insert(p, Status::Skipped);
+                st.skipped += 1;
             } else if waiting == 0 {
                 st.status.insert(p.clone(), Status::Ready);
                 st.ready.push_back(p);

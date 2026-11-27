@@ -314,7 +314,8 @@ impl Store {
         crate::upload::with_uploads(self, opts, |up| {
             let out = self.realise_with(drvs, opts, up)?;
             if let Some(up) = up {
-                up.submit(out.values().flat_map(|m| m.values()));
+                let outputs: Vec<StorePath> = out.values().flat_map(|m| m.values()).cloned().collect();
+                up.submit_final(drvs, &outputs);
             }
             Ok(out)
         })
@@ -444,7 +445,7 @@ impl Store {
                 built.into_inner().unwrap().remove(drv_path).unwrap_or_default()
             };
             if let Some(up) = up {
-                up.submit(out.values());
+                up.submit_built(out.values());
             }
             Ok(out)
         })
@@ -556,7 +557,7 @@ impl Store {
             self.build_derivation(drv_path, drv, all, opts, progress)?
         };
         if let Some(up) = up {
-            up.submit(outputs.values());
+            up.submit_built(outputs.values());
         }
         built.lock().unwrap().insert(drv_path.clone(), outputs);
         Ok(())
