@@ -163,6 +163,39 @@ cranix --store ~/build build --upload-to 'file:///tmp/cache?compression=zstd' --
 cranix build --upload-to 'gitlab://gitlab.example.com/group/project?token-file=/run/secrets/gl' --upload-jobs 8 .#hello
 ```
 
+**Choosing what goes into a cache.** `copy --to` and uploads while
+building take the same filters. Each chosen path goes up with its runtime
+closure, and a path whose closure holds a left-out path is left out too,
+so a cache only ever holds complete closures.
+
+| `copy` flag | upload setting | effect |
+|---|---|---|
+| `--type TYPES` | `upload-types` | take these kinds of paths from the derivation graph of the given paths (a `.drv`, or an output's deriver): `source`, `drv`, `drv-out-path`, `fixed-output-drv`, `fixed-output-out-path`, `build-drv`, `build-out-path`, `toplevel-drv`; without types, the given paths themselves |
+| `--exclude-host GLOB` | `upload-exclude-hosts` | leave out outputs of fixed-output derivations whose `url` or `urls` name a matching host (`*.github.com`) |
+| `--exclude-name GLOB` | `upload-exclude-names` | leave out derivations whose name matches, their outputs, and everything built from them |
+| `--exclude-class system\|test` | `upload-exclude-classes` | the same for built-in name patterns: `system` for the parts of one machine (`nixos-system-*`, `etc`, `etc-*`, `unit-*`, `initrd*`, `system-path`, `system-units`, `user-units`, `*.pam`, `udev-rules`, `tmpfiles.d`, `security-wrapper-*`, `X-Restart-Triggers-*`, `*-image`, `*.img`, `*.iso`, …), `test` for `vm-test-run-*`, `nixos-test-*`, `*-test`, `*-tests` |
+| `--exclude-local` | `upload-exclude-local` | leave out outputs of derivations with `preferLocalBuild = true` or `allowSubstitutes = false`, except fixed-output ones (nixpkgs' fetchers set `preferLocalBuild` too) |
+
+Name and class matches spread to everything built from the derivation,
+also without a runtime reference: a package built against generated
+configuration is as specific as the configuration. Host and local-build
+matches apply to outputs only, so the `.drv` files of the derivations built
+from them stay complete. Paths missing from the local store are left out
+with a warning that lists them. `copy --dry-run` prints `copy PATH (TYPE)`
+for each path it would upload (`reference` for paths taken as part of a
+closure) and `skip PATH: REASON` for each one it leaves out.
+`copy --to-nars DIR` writes the selection as `DIR/<path>.nar` files with
+`DIR/index.json` (path, NAR hash and size, references, deriver,
+signatures, in upload order); `--to file:///DIR` writes a binary cache.
+
+A shared cache for generic builds, filled while building a system image:
+
+```sh
+cranix build .#targetImage --upload-to 'gitlab://gitlab.example.com/group/common-cache?token-file=/run/secrets/gl' \
+  --upload-exclude-classes system --upload-exclude-local --upload-exclude-names 'myproject-*'
+cranix copy --to-nars /tmp/x --dry-run --type build-drv --exclude-class system --exclude-local ./image.drv
+```
+
 **Registry caches.** The package registry of a GitLab or GitHub project
 serves as a binary cache:
 
@@ -311,7 +344,7 @@ Commands: `eval` (`--json`, `--raw`, `--lazy`), `instantiate`, `build`
 `store add|path-info|sign|closure|ls|verify|gc|serve` (`path-info --json -r
 --closure-size`, also against a cache with `--store URL`), `copy --to URL` and
 `copy --from URL` for `file://`, `http(s)://`, `gitlab://` and `github://`
-caches (uploads with `PUT`), `cache serve`, and
+caches (uploads with `PUT`; filters, `--dry-run` and `--to-nars`), `cache serve`, and
 `key generate-secret|convert-secret-to-public`, `config show [NAME]`, and
 `daemon` (`--stdio`, `--socket`, `--force-trusted`, `--force-untrusted`).
 Global options: `--store`, `-I`, `--arg`, `--argstr`, `--pure`,
@@ -424,6 +457,11 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
   The unit tests round-trip a `flake.lock` written by Nix.
 * `tests/build.nix` exercises the builder: parallel leaves, references,
   `passAsFile`, multiple outputs and a fixed-output derivation.
+* The `copy_filters` integration test of the CLI builds a small graph
+  (a source, a download, packages, a generated unit, a build input matched
+  by name, a system toplevel and a test) and checks each path type and
+  filter with `copy --dry-run`, `--to-nars`, `--to file://` and the
+  `upload-*` filter settings.
 * The `upload` integration test of the CLI builds a chain of derivations
   with `--upload-to` and checks that each output reaches the cache while
   the next one builds, that a build killed half way leaves only complete

@@ -145,6 +145,10 @@ Nix's single-process, single-machine shape:
 * `upload-to` uploads each output while later builds run, closure by
   closure, so the cache stays complete even when a build stops half way;
   Nix uploads after the build with `nix copy` or a `post-build-hook`.
+* `copy` and uploads take filters by path type, download host, name and
+  class (`system`, `test`), spreading name matches to everything built
+  from them, so a shared cache can hold the generic builds of a system
+  image without its configuration; `copy --dry-run` explains each choice.
 
 ### Measured against Nix 2.24
 
