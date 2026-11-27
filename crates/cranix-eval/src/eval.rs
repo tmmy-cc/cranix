@@ -64,6 +64,7 @@ pub struct Eval {
     globals: Vec<Sym>,
     base_env: OnceCell<Rc<Env>>,
     import_cache: RefCell<HashMap<String, Value>>,
+    ast_cache: Option<crate::astcache::AstCache>,
     pub path_cache: RefCell<HashMap<String, StorePath>>,
     /// Derivations instantiated (or read) during this evaluation.
     pub drvs: RefCell<HashMap<StorePath, Rc<Derivation>>>,
@@ -104,6 +105,7 @@ impl Eval {
             globals: names,
             base_env: OnceCell::new(),
             import_cache: RefCell::new(HashMap::new()),
+            ast_cache: crate::astcache::AstCache::open(),
             path_cache: RefCell::new(HashMap::new()),
             drvs: RefCell::new(HashMap::new()),
             drv_hashes: RefCell::new(HashMap::new()),
@@ -238,11 +240,26 @@ impl Eval {
             files.push((file_name.to_string(), src.into()));
             (files.len() - 1) as u32
         };
-        let ast = Parser::new(src, file, base_dir).parse_file().map_err(|e| {
-            let mut err = EvalError::new(ErrKind::Other, e.msg);
-            err.pos = Some(Pos { file, offset: e.offset as u32 });
-            Box::new(err)
-        })?;
+        let cache = self.ast_cache.as_ref().filter(|c| c.wants(src));
+        let key = cache.map(|_| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            crate::astcache::AstCache::key(src, base_dir, &home)
+        });
+        let cached = cache.zip(key.as_deref()).and_then(|(c, k)| c.load(k, file));
+        let ast = match cached {
+            Some(ast) => ast,
+            None => {
+                let ast = Parser::new(src, file, base_dir).parse_file().map_err(|e| {
+                    let mut err = EvalError::new(ErrKind::Other, e.msg);
+                    err.pos = Some(Pos { file, offset: e.offset as u32 });
+                    Box::new(err)
+                })?;
+                if let Some((c, k)) = cache.zip(key.as_deref()) {
+                    c.store(k, &ast);
+                }
+                ast
+            }
+        };
         let mut compiler = Compiler::new(&self.globals);
         if !scope.is_empty() {
             compiler = compiler.with_scope(scope.iter().cloned());
