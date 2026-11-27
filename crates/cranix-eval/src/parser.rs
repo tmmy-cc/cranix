@@ -213,7 +213,7 @@ impl<'a> Parser<'a> {
         if c == b'~' && s.get(i + 1) == Some(&b'/') {
             if let Some((n, interp)) = self.match_path(i + 1) {
                 if interp {
-                    return self.err(i, "interpolation in home paths is not supported");
+                    return Ok((Tok::PathStart(text(i, i + 1 + n)), i, i + 1 + n));
                 }
                 return Ok((Tok::HPath(text(i + 1, i + 1 + n)), i, i + 1 + n));
             }
@@ -747,7 +747,10 @@ impl<'a> Parser<'a> {
             Tok::SPath(p) => Ast::SearchPath(p, pos),
             Tok::Uri(u) => Ast::Str(vec![StrPart::Lit(u)], pos),
             Tok::PathStart(p) => {
-                let mut prefix = self.resolve_path(&p);
+                let mut prefix = match p.strip_prefix('~') {
+                    Some(rest) => canon_path(&format!("{}{rest}", self.home)),
+                    None => self.resolve_path(&p),
+                };
                 if p.ends_with('/') && !prefix.ends_with('/') {
                     prefix.push('/');
                 }
