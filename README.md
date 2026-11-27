@@ -559,6 +559,15 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
   The unit tests round-trip a `flake.lock` written by Nix.
 * `tests/build.nix` exercises the builder: parallel leaves, references,
   `passAsFile`, multiple outputs and a fixed-output derivation.
+* `tests/langtest.py` runs the language tests of Nix 2.24.10
+  (`tests/functional/lang`) and of Snix (`snix_tests`), cloned at pinned
+  revisions with `--fetch` into `~/.cache/cranix/langtests`: `eval-okay`
+  cases must print their `.exp` output, `eval-fail` and `parse-fail` cases
+  must fail, `parse-okay` cases must parse and Snix's `identity` cases must
+  evaluate to their own text. For failing cases it also counts how often
+  the first error line matches Nix's. Tests cranix does not pass yet are
+  listed in `tests/langtest-known.txt`; a test outside the list that fails,
+  fails the run, and `--update-known` rewrites the list.
 * The `vuln` integration test of the CLI imports a fixture database (OSV
   records as files and a zip archive, an NVD feed) and checks matching by
   ecosystem, by CPE product with and without vendor and by release part,
