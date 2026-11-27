@@ -1,6 +1,7 @@
 //! The Nix language: parser, scope-resolving compiler and lazy evaluator.
 
 pub mod ast;
+pub mod astcache;
 pub mod builtins;
 pub mod compile;
 pub mod derivation;
