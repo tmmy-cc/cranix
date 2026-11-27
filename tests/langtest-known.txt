@@ -10,7 +10,6 @@ snix/eval-okay-builtins-genericClosure-pointer-equality
 snix/eval-okay-builtins-map-function-strictness
 snix/eval-okay-builtins-mapAttrs-function-strictness
 snix/eval-okay-builtins-replace-strings-propagate-catchable
-snix/eval-okay-builtins-split
 snix/eval-okay-identifier-formatting
 snix/eval-okay-import-display
 snix/eval-okay-observable-eval-cache

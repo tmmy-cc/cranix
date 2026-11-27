@@ -543,15 +543,29 @@ pub static PRIMOPS: &[PrimOp] = &[
     prim!("split", 2, |ev, a| {
         let re = regex(ev, &ev.force_plain_str(&a[0])?, false)?;
         let s = ev.force_str(&a[1])?;
+        // Matches are found as std::regex_iterator finds them: the search
+        // goes on at the end of a match, where an empty match counts too,
+        // and moves one character past an empty match.
+        let text = s.s.as_str();
         let mut out = Vec::new();
         let mut last = 0;
-        for c in re.captures_iter(&s.s) {
+        let mut pos = 0;
+        while pos <= text.len() {
+            let Some(c) = re.captures_at(text, pos) else { break };
             let m = c.get(0).unwrap();
-            out.push(Value::str(&s.s[last..m.start()]));
+            out.push(Value::str(&text[last..m.start()]));
             out.push(Value::list((1..c.len()).map(|i| c.get(i).map_or(Value::Null, |g| Value::str(g.as_str()))).collect()));
             last = m.end();
+            pos = if m.is_empty() {
+                match text[m.end()..].chars().next() {
+                    Some(ch) => m.end() + ch.len_utf8(),
+                    None => break,
+                }
+            } else {
+                m.end()
+            };
         }
-        out.push(Value::str(&s.s[last..]));
+        out.push(Value::str(&text[last..]));
         Ok(Value::list(out))
     }),
     prim!("splitVersion", 1, |ev, a| {
