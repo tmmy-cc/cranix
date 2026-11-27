@@ -121,6 +121,11 @@ impl Eval {
         if entry.starts_with('/') {
             return Some(entry.to_string());
         }
+        // A relative path names a directory below the working directory.
+        if !entry.contains(':') {
+            let cwd = std::env::current_dir().ok()?;
+            return Some(cwd.join(entry).to_string_lossy().into_owned());
+        }
         if let Some(r) = self.search_resolved.borrow().get(entry) {
             return r.clone();
         }

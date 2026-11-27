@@ -124,7 +124,8 @@ fn parse_search(s: &str) -> Option<(String, String)> {
         Some((p, v)) => (p.to_string(), v.to_string()),
         None => (String::new(), s.to_string()),
     };
-    path.starts_with('/').then_some((prefix, path))
+    // Relative entries resolve against the working directory when looked up.
+    (!path.is_empty()).then_some((prefix, path))
 }
 
 /// Splits `NIX_PATH` at colons that do not belong to a `flake:` or URL
