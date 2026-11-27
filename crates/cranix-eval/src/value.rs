@@ -146,7 +146,17 @@ pub type Entry = (Sym, Value);
 pub struct Attrs {
     repr: Repr,
     len: usize,
+    /// Where the attributes were defined: tables of the set expressions
+    /// the set came from, the ones of `//`'s right side first.
+    pos: Option<Rc<[PosTable]>>,
 }
+
+/// The positions of the static attributes of one set expression, sorted
+/// by name.
+pub type PosTable = &'static [(Sym, crate::ast::Pos)];
+
+/// Position tables kept for a set made by `//`.
+const POS_TABLES_MAX: usize = 8;
 
 enum Repr {
     Flat(Vec<Entry>),
@@ -213,7 +223,29 @@ fn merge(a: &[Entry], b: &[Entry]) -> Vec<Entry> {
 impl Attrs {
     /// Wraps entries that are already sorted by key without duplicates.
     pub fn from_sorted(v: Vec<Entry>) -> Attrs {
-        Attrs { len: v.len(), repr: Repr::Flat(v) }
+        Attrs { len: v.len(), repr: Repr::Flat(v), pos: None }
+    }
+
+    /// The set with the attribute positions of one set expression.
+    pub fn with_positions(mut self, table: PosTable) -> Attrs {
+        if !table.is_empty() {
+            self.pos = Some(Rc::from([table]));
+        }
+        self
+    }
+
+    /// Where the attribute `k` was defined, if a set expression made it.
+    pub fn position(&self, k: &Sym) -> Option<crate::ast::Pos> {
+        self.pos.as_ref()?.iter().find_map(|t| t.binary_search_by(|(s, _)| s.cmp(k)).ok().map(|i| t[i].1))
+    }
+
+    fn merged_positions(a: &Attrs, b: &Attrs) -> Option<Rc<[PosTable]>> {
+        match (&a.pos, &b.pos) {
+            (None, None) => None,
+            (Some(x), None) => Some(x.clone()),
+            (None, Some(y)) => Some(y.clone()),
+            (Some(x), Some(y)) => Some(y.iter().chain(x.iter()).take(POS_TABLES_MAX).copied().collect()),
+        }
     }
 
     pub fn get(&self, k: &Sym) -> Option<&Value> {
@@ -284,9 +316,12 @@ impl Attrs {
             return Rc::new(Attrs {
                 len: a.len + top.len() - shadowed,
                 repr: Repr::Layered { base: a.clone(), top, depth: a.depth() + 1, flat: OnceCell::new() },
+                pos: Attrs::merged_positions(a, b),
             });
         }
-        Rc::new(Attrs::from_sorted(merge(&a.entries_uncached(), &b.entries_uncached())))
+        let mut out = Attrs::from_sorted(merge(&a.entries_uncached(), &b.entries_uncached()));
+        out.pos = Attrs::merged_positions(a, b);
+        Rc::new(out)
     }
 
     /// Builds a set from unsorted entries; later duplicates win.
