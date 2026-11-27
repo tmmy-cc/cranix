@@ -161,17 +161,30 @@ Evaluation of `(import <nixpkgs> {}).<attr>.drvPath` on an Apple M-series
 machine (aarch64-darwin), nixpkgs 24.11pre, best of three runs, `.drv` files
 already present in both stores. Both tools print the same path.
 
-| Attribute | Nix 2.24 time | cranix time | Nix peak RSS | cranix peak RSS |
-|-----------|--------------:|-----------:|-------------:|---------------:|
-| `hello`   | 0.29 s        | 0.25 s     | 205 MiB      | 157 MiB        |
-| `python3` | 0.29 s        | 0.26 s     | 206 MiB      | 160 MiB        |
-| `git`     | 0.36 s        | 0.35 s     | 265 MiB      | 225 MiB        |
+| Attribute | Nix 2.24 time | cranix, cache off | cranix, cold cache | cranix, warm cache | Nix peak RSS | cranix peak RSS |
+|-----------|--------------:|------------------:|-------------------:|-------------------:|-------------:|----------------:|
+| `hello`   | 0.29 s        | 0.28 s            | 0.31 s             | 0.24 s             | 205 MiB      | 151 MiB         |
+| `python3` | 0.29 s        | 0.28 s            | 0.31 s             | 0.25 s             | 206 MiB      | 153 MiB         |
+| `git`     | 0.36 s        | 0.38 s            | 0.42 s             | 0.34 s             | 265 MiB      | 213 MiB         |
+| NixOS `toplevel` | –      | 2.00 s            | 2.18 s             | 1.72 s             | –            | 1137 MiB        |
+
+The cache columns refer to the on-disk cache of parsed files
+(`CRANIX_AST_CACHE=0` turns it off; a cold run fills it, a warm run reads
+it). The NixOS row evaluates `config.system.build.toplevel.drvPath` of a
+minimal `x86_64-linux` configuration through `<nixpkgs/nixos>`; it reads
+about 2,600 files and fills 26 MB of cache.
 
 cranix (with mimalloc) is on par with or slightly faster than Nix on these
-workloads and uses 15–25% less memory. A heap profile of `hello` peaks at
-about 140 MB; the largest remaining items are merges of mid-sized sets by
-`//` (30%), thunks including `mapAttrs` results (26%), and the compiled
-syntax trees of the imported files (8%). Most of
+workloads and uses 15–25% less memory. A sampling profile of the NixOS
+evaluation without the cache puts about 15% of the evaluation thread in the
+parser (10% in the lexer alone), 3% in the compile pass, 11% in the dispatch
+of the tree walker itself, and the rest in builtins, attribute set
+operations, thunks, allocation and derivation hashing. A warm cache removes
+the parsing share, which gives the 10–15% above; dispatch stays below the
+level at which a bytecode VM would pay for itself. A heap profile of `hello`
+peaks at about 140 MB; the largest remaining items are merges of mid-sized
+sets by `//` (30%), thunks including `mapAttrs` results (26%), and the
+compiled syntax trees of the imported files (8%). Most of
 it stays live until exit, because reference counting does not reclaim the
 cycles that fixpoints create. Lix and Snix were not installed on the
 benchmark machine and are not part of this table.
