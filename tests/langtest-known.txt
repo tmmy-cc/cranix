@@ -13,8 +13,6 @@ nix/eval-okay-overrides
 nix/eval-okay-path-string-interpolation
 nix/eval-okay-pathexists
 nix/eval-okay-print
-nix/parse-fail-patterns-1
-nix/parse-okay-crlf
 snix/eval-fail-outer-value-never-pointer-equal
 snix/eval-okay-builtins-genList-function-strictness
 snix/eval-okay-builtins-genericClosure-pointer-equality
