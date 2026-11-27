@@ -525,9 +525,9 @@ pub static PRIMOPS: &[PrimOp] = &[
     }),
     prim!("replaceStrings", 3, replace_strings),
     prim!("scopedImport", 2, |ev, a| {
-        let _ = ev.force_attrs(&a[0])?;
+        let scope = ev.force_attrs(&a[0])?;
         let p = realised_path(ev, &a[1])?;
-        ev.import(&p)
+        ev.scoped_import(&p, &scope)
     }),
     prim!("seq", 2, |ev, a| {
         ev.force(&a[0])?;

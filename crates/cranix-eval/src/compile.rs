@@ -236,6 +236,13 @@ impl Compiler {
         self.expr(ast, None)
     }
 
+    /// Adds a scope of `names` in front of the globals, in slot order, as
+    /// `scopedImport` does with the attributes it is given.
+    pub fn with_scope(mut self, names: impl IntoIterator<Item = Sym>) -> Compiler {
+        self.push(names);
+        self
+    }
+
     fn resolve(&self, name: &Sym, skip: usize, pos: Pos) -> R<Expr> {
         let mut has_with = false;
         for (depth, s) in self.scopes.iter().rev().enumerate().skip(skip) {
