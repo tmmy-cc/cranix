@@ -142,6 +142,9 @@ Nix's single-process, single-machine shape:
   (`gitlab://`, `github://`), with separate read and write tokens and NARs
   grouped into registry packages by hash, by name or by release;
   `cache serve` exposes such a cache over plain HTTP for Nix.
+* `upload-to` uploads each output while later builds run, closure by
+  closure, so the cache stays complete even when a build stops half way;
+  Nix uploads after the build with `nix copy` or a `post-build-hook`.
 
 ### Measured against Nix 2.24
 

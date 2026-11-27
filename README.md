@@ -142,6 +142,27 @@ store registers, from its own builds or from daemon clients, are signed
 with `secret-key-files`, and `copy --to` uploads the realisations of the
 outputs it copies, signed with the copy keys.
 
+**Upload while building.** With `upload-to` (`build --upload-to URL`), each
+output goes to that cache as soon as it is built and registered, while
+later builds run, on `upload-jobs` threads (default 4). Any cache URL
+works, the registry caches included. A path is uploaded only once every
+path it references is in the cache, and its NAR before its narinfo, so the
+cache holds complete closures at every moment, also when the build is
+stopped half way. At the end the closures of the requested outputs are in
+the cache, substituted and already present paths included, with the
+realisations of content-addressed outputs. Uploads are signed with
+`secret-key-files` and the URL's `secret-key`. A failed upload prints a
+warning with the URL's secrets hidden, keeps the paths that refer to the
+failed one out of the cache, and fails the build only with
+`upload-required` (`--upload-required`). The daemon uploads what it builds
+for its clients, and a store using remote builders uploads the outputs
+they return, through the same queue.
+
+```sh
+cranix --store ~/build build --upload-to 'file:///tmp/cache?compression=zstd' --secret-key-files ./key ./default.nix
+cranix build --upload-to 'gitlab://gitlab.example.com/group/project?token-file=/run/secrets/gl' --upload-jobs 8 .#hello
+```
+
 **Registry caches.** The package registry of a GitLab or GitHub project
 serves as a binary cache:
 
@@ -283,7 +304,8 @@ target/release/cranix build tests/build.nix --builders 'ssh-ng://builder@host x8
 ```
 
 Commands: `eval` (`--json`, `--raw`, `--lazy`), `instantiate`, `build`
-(`-o`, `--no-link`, `-j`, `-L`, `--keep-failed`), `show-derivation`,
+(`-o`, `--no-link`, `-j`, `-L`, `--keep-failed`, `--upload-to`,
+`--upload-jobs`, `--upload-required`), `show-derivation`,
 `realisation info`,
 `hash path|file|convert`, `nar dump|restore`, and
 `store add|path-info|sign|closure|ls|verify|gc|serve` (`path-info --json -r
@@ -402,6 +424,14 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
   The unit tests round-trip a `flake.lock` written by Nix.
 * `tests/build.nix` exercises the builder: parallel leaves, references,
   `passAsFile`, multiple outputs and a fixed-output derivation.
+* The `upload` integration test of the CLI builds a chain of derivations
+  with `--upload-to` and checks that each output reaches the cache while
+  the next one builds, that a build killed half way leaves only complete
+  closures, and that failed uploads warn with the URL's secrets hidden or,
+  with `--upload-required`, fail the build. A daemon test checks the
+  uploads of the daemon and of remote builds.
+  `tests/upload-while-building.sh` reads such a cache with
+  `nix path-info` and `nix store verify`.
 * `tests/http-cache.sh` uploads a closure to a local HTTP cache (the
   `cache-server` example of `cranix-store`) and reads it back with
   `nix path-info`, `nix store verify` and `nix copy`. The same server backs
