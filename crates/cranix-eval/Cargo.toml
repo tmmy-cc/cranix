@@ -11,3 +11,4 @@ cranix-store.workspace = true
 cranix-fetchers.workspace = true
 regex.workspace = true
 serde_json.workspace = true
+smallvec.workspace = true

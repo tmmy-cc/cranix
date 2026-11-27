@@ -13,6 +13,7 @@ pub mod parser;
 pub mod print;
 pub mod toml;
 pub mod value;
+pub mod vm;
 pub mod xml;
 
 pub use error::RenderOptions;

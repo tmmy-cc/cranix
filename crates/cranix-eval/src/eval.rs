@@ -65,6 +65,7 @@ pub struct Eval {
     base_env: OnceCell<Rc<Env>>,
     import_cache: RefCell<HashMap<String, Value>>,
     ast_cache: Option<crate::astcache::AstCache>,
+    vm: bool,
     pub path_cache: RefCell<HashMap<String, StorePath>>,
     /// Derivations instantiated (or read) during this evaluation.
     pub drvs: RefCell<HashMap<StorePath, Rc<Derivation>>>,
@@ -106,6 +107,7 @@ impl Eval {
             base_env: OnceCell::new(),
             import_cache: RefCell::new(HashMap::new()),
             ast_cache: crate::astcache::AstCache::open(),
+            vm: crate::vm::enabled(),
             path_cache: RefCell::new(HashMap::new()),
             drvs: RefCell::new(HashMap::new()),
             drv_hashes: RefCell::new(HashMap::new()),
@@ -274,7 +276,7 @@ impl Eval {
             err.hint = e.hint;
             Box::new(err)
         })?;
-        Ok(e)
+        Ok(if self.vm { crate::vm::lower(e) } else { e })
     }
 
     pub fn eval_string(&self, src: &str, base_dir: &str) -> R<Value> {
@@ -466,6 +468,7 @@ impl Eval {
                 Ok(Value::str_ctx(s, ctx))
             }
             Expr::CurPos(pos) => Ok(self.pos_value(*pos)),
+            Expr::Code(chunk) => self.run(chunk, env),
         }
     }
 
@@ -581,12 +584,28 @@ impl Eval {
         Value::list(items.iter().map(|i| self.lazy(i, env, true)).collect())
     }
 
+    pub(crate) fn closure(&self, def: &'static LambdaDef, env: &Rc<Env>) -> Value {
+        Value::Lambda(Rc::new(Closure { def, env: env.clone() }))
+    }
+
+    pub(crate) fn lazy_arg(&self, e: &'static Expr, env: &Rc<Env>) -> Value {
+        self.lazy(e, env, true)
+    }
+
     pub(crate) fn cond_frame(pos: Pos) -> Frame {
         Frame::detail("while evaluating a branch condition", Some(pos))
     }
 
     pub(crate) fn assert_frame(&self, pos: Pos) -> Frame {
         Frame::detail(format!("while evaluating the condition of the assertion '{}'", self.assert_text(pos)), Some(pos))
+    }
+
+    pub(crate) fn add_frame<T>(&self, r: R<T>, frame: impl FnOnce() -> Frame) -> R<T> {
+        self.with_frame(r, frame)
+    }
+
+    pub(crate) fn locate_at<T>(&self, r: R<T>, pos: Pos) -> R<T> {
+        self.locate(r, pos)
     }
 
     pub(crate) fn if_cond(&self, v: Value, pos: Pos) -> R<bool> {
