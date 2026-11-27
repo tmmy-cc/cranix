@@ -60,6 +60,8 @@ pub enum Expr {
     Neg(&'static Expr, Pos),
     Concat { parts: Box<[&'static Expr]>, path: bool, pos: Pos },
     CurPos(Pos),
+    /// The expression run as bytecode, compiled on first use.
+    Code(&'static crate::vm::Code),
 }
 
 fn leak<T>(t: T) -> &'static T {
