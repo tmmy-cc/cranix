@@ -189,6 +189,19 @@ it stays live until exit, because reference counting does not reclaim the
 cycles that fixpoints create. Lix and Snix were not installed on the
 benchmark machine and are not part of this table.
 
+Flake installables also use the evaluation cache. `eval --raw
+nixpkgs#<attr>.drvPath`, best of three:
+
+| Attribute | Nix 2.24 | cranix, `--no-eval-cache` | cranix, cached |
+|-----------|---------:|--------------------------:|---------------:|
+| `hello`   | 0.71 s   | 0.29 s                    | 0.004 s        |
+| `python3` | 0.72 s   | 0.30 s                    | 0.003 s        |
+| `git`     | 0.87 s   | 0.39 s                    | 0.004 s        |
+
+Nix's evaluation cache does not cover the final value of `nix eval`, so its
+time is the same with and without `--no-eval-cache`. A cached `cranix build
+nixpkgs#hello` whose output is present takes under 10 ms (0.28 s uncached).
+
 ### Choosing between them
 
 * Running NixOS or a production fleet: Nix or Lix. They have years of

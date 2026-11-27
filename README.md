@@ -421,7 +421,13 @@ such as `.#hello` or `nixpkgs#hello` for `eval`, `build`, `run`, `shell` and
 Flake evaluation is pure unless `--impure` is given; the lock flags of Nix
 (`--no-write-lock-file`, `--update-input`, `--override-input`,
 `--override-flake`, `--recreate-lock-file`, `--commit-lock-file`,
-`--refresh`, …) are accepted. `run`, `shell` and `develop` use outputs that
+`--refresh`, …) are accepted. `eval`, `build` and `instantiate` of a flake
+installable keep their results (the printed value, or the derivations to
+build) in an evaluation cache under `$XDG_CACHE_HOME/cranix/eval-cache-v1`,
+one JSON file per flake fingerprint, so a repeated command on the same
+locked flake only locks it; derivations a cached entry names must be valid
+in the store. Dirty trees, unlocked inputs and `--impure` get no cache, and
+`--no-eval-cache` (the `eval-cache` setting) turns it off. `run`, `shell` and `develop` use outputs that
 are already in the host store and build the missing ones: through the
 daemon given with `--store` (such as `--store daemon` for the system Nix
 daemon), else in the evaluation store, which substitutes what it can and
