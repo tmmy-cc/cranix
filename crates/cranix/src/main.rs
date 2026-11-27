@@ -19,6 +19,7 @@ use cranix_store::Store;
 mod cache_serve;
 mod copy_cmd;
 mod sbom_cmd;
+mod vuln_cmd;
 mod remote;
 mod flake_cmd;
 
@@ -57,6 +58,9 @@ commands:
   sbom [FILE | --expr E | INSTALLABLE] [-A ATTR] [--format cyclonedx|spdx] [-o FILE]
         [--build-time] [--scan-binaries] [--scan-sources] [--merge DOC]   SBOM of a package or NixOS system
   sbom lock Cargo.lock|package-lock.json        SBOM of a lock file
+  vuln-db update [--db DIR] | vuln-db import [--osv FILE] [--nvd FEED]   vulnerability database
+  vuln-scan SBOM [--vex FILE] [--fail-on LEVEL] [--max-db-age 7d] [--report FILE]
+                                                 check an SBOM; exits 2 on findings, 3 on an old database
   key generate-secret --key-name NAME | key convert-secret-to-public < KEY
   config show [--show-secrets] [NAME]            print the settings in effect
   store serve [--write]                          serve the store to ssh:// clients (also: --serve)
@@ -307,6 +311,8 @@ fn run() -> Result<(), String> {
         "store" => cmd_store(&cli, &args),
         "copy" => copy_cmd::cmd_copy(&cli, &args),
         "sbom" => sbom_cmd::cmd_sbom(&cli, &args),
+        "vuln-db" => vuln_cmd::cmd_vuln_db(&cli, &args),
+        "vuln-scan" => vuln_cmd::cmd_vuln_scan(&args),
         "cache" => cache_serve::cmd_cache(&cli.settings, &args),
         "key" => cmd_key(&args),
         "config" => cmd_config(&cli, &args),

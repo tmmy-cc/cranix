@@ -126,6 +126,7 @@ dependencies = [
  "cranix-sbom",
  "cranix-store",
  "dhat",
+ "flate2",
  "libc",
  "mimalloc",
  "serde_json",
