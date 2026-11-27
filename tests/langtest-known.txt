@@ -3,7 +3,6 @@ nix/eval-fail-set-override
 nix/eval-okay-attrs5
 nix/eval-okay-attrs6
 nix/eval-okay-context-introspection
-nix/eval-okay-foldlStrict-lazy-initial-accumulator
 nix/eval-okay-fromTOML-timestamps
 nix/eval-okay-getattrpos
 nix/eval-okay-getattrpos-functionargs
