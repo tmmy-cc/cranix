@@ -257,12 +257,15 @@ pub static PRIMOPS: &[PrimOp] = &[
     }),
     prim!("findFile", 2, |ev, a| find_file(ev, &a[0], &ev.force_plain_str(&a[1])?)),
     prim!("foldl'", 3, |ev, a| {
+        // The initial accumulator is forced only for an empty list; each
+        // result of the function is forced before the next step.
         let f = ev.force_fn(&a[0])?;
-        let mut acc = ev.force(&a[1])?;
-        for x in ev.force_list(&a[2])?.iter() {
-            acc = ev.call2(&f, acc, x.clone())?;
+        let list = ev.force_list(&a[2])?;
+        let mut acc = a[1].clone();
+        for x in list.iter() {
+            acc = ev.force(&ev.call2(&f, acc, x.clone())?)?;
         }
-        Ok(acc)
+        ev.force(&acc)
     }),
     prim!("fromJSON", 1, |ev, a| crate::print::from_json(&ev.force_str(&a[0])?.s)),
     prim!("fromTOML", 1, |ev, a| crate::toml::from_toml(&ev.force_str(&a[0])?.s)),
