@@ -180,8 +180,26 @@ evaluation without the cache puts about 15% of the evaluation thread in the
 parser (10% in the lexer alone), 3% in the compile pass, 11% in the dispatch
 of the tree walker itself, and the rest in builtins, attribute set
 operations, thunks, allocation and derivation hashing. A warm cache removes
-the parsing share, which gives the 10–15% above; dispatch stays below the
-level at which a bytecode VM would pay for itself. A heap profile of `hello`
+the parsing share, which gives the 10–15% above.
+
+cranix also has a bytecode VM beside the tree walker (`CRANIX_EVAL=vm`). It
+compiles each thunk body, lambda body and file on first use into a flat
+chunk of ops on a value stack, reuses the tree walker's operations, and
+records error frames as regions over the ops, so results, errors and traces
+are identical. With a warm parse cache, best of five:
+
+| Attribute        | Tree walker      | VM               |
+|------------------|-----------------:|-----------------:|
+| `hello`          | 0.24 s, 150 MiB  | 0.25 s, 157 MiB  |
+| `python3`        | 0.24 s, 153 MiB  | 0.25 s, 159 MiB  |
+| `git`            | 0.33 s, 212 MiB  | 0.35 s, 218 MiB  |
+| NixOS `toplevel` | 1.71 s, 1136 MiB | 1.83 s, 1179 MiB |
+
+The VM is 4–7% slower and uses 3–4% more memory, so the tree walker is the
+default. The walker's dispatch is a small share of the time to begin with,
+and the VM moves values through its stack where the walker returns them in
+registers, which adds reference-count traffic; forcing, attribute lookups,
+allocation and hashing cost the same in both. A heap profile of `hello`
 peaks at about 140 MB; the largest remaining items are merges of mid-sized
 sets by `//` (30%), thunks including `mapAttrs` results (26%), and the
 compiled syntax trees of the imported files (8%). Most of
