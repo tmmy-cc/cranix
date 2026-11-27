@@ -148,13 +148,32 @@ pub struct Selected {
 /// Locks and evaluates `spec` (`flakeref#attrpath`), trying Nix's
 /// default attribute paths and prefixes for `kind`.
 pub fn eval_installable(ev: &Eval, cli: &Cli, flags: &FlakeFlags, spec: &str, kind: Kind) -> R<Selected> {
+    let inst = lock_installable(ev, flags, spec)?;
+    eval_locked(ev, cli, &inst, kind)
+}
+
+/// A flake installable with its flake locked.
+pub struct Installable {
+    pub flake_ref: FlakeRef,
+    pub frag: String,
+    pub locked: LockedFlake,
+}
+
+pub fn lock_installable(ev: &Eval, flags: &FlakeFlags, spec: &str) -> R<Installable> {
     let (r, frag) = flakeref::parse_with_fragment(spec, Some(&crate::cwd()), false, true).or_else(err)?;
     let mut lock = flags.lock.clone();
     if ev.opts.pure {
         lock.allow_unlocked = true;
     }
     let locked = flake::lock_flake(ev, &r, &lock)?;
-    let outputs = flake::call_flake(ev, &locked)?;
+    Ok(Installable { flake_ref: r, frag, locked })
+}
+
+/// Evaluates the installable's attribute, trying Nix's default attribute
+/// paths and prefixes for `kind`.
+pub fn eval_locked(ev: &Eval, cli: &Cli, inst: &Installable, kind: Kind) -> R<Selected> {
+    let (r, frag) = (&inst.flake_ref, &inst.frag);
+    let outputs = flake::call_flake(ev, &inst.locked)?;
     let (defs, prefixes) = defaults(kind, cli.system());
     let candidates: Vec<String> = if frag.is_empty() {
         defs
@@ -824,18 +843,20 @@ pub fn cmd_flake(cli: &Cli, args: &[String]) -> Result<(), String> {
 /// `cranix eval INSTALLABLE`.
 pub fn cmd_eval(cli: &Cli, spec: &str, flags: &FlakeFlags, json: bool, raw: bool) -> Result<(), String> {
     let ev = new_eval(cli, flags.impure)?;
-    let r = (|| {
-        let sel = eval_installable(&ev, cli, flags, spec, Kind::Eval)?;
-        if json {
-            let mut s = String::new();
-            print::to_json(&ev, &sel.value, &mut s, &mut Default::default())?;
-            Ok(s)
-        } else if raw {
-            Ok(ev.force_str(&sel.value)?.s.clone())
-        } else {
-            ev.deep_force(&sel.value)?;
-            print::print_value(&ev, &sel.value, true)
+    let r = (|| -> R<String> {
+        let inst = lock_installable(&ev, flags, spec)?;
+        let mode = if json { "json" } else if raw { "raw" } else { "print" };
+        let cache = crate::eval_cache::EvalCache::open(cli, &ev, flags.impure, &inst.locked, &format!("eval-{mode}"), &inst.frag);
+        if let Some(serde_json::Value::String(s)) = cache.as_ref().and_then(|c| c.get()) {
+            if crate::eval_cache::drvs_valid(&ev, &s) {
+                return Ok(s);
+            }
         }
+        let s = eval_value(&ev, cli, &inst, json, raw)?;
+        if let Some(c) = &cache {
+            c.put(serde_json::Value::String(s.clone()));
+        }
+        Ok(s)
     })();
     match r {
         Ok(s) => {
@@ -847,6 +868,20 @@ pub fn cmd_eval(cli: &Cli, spec: &str, flags: &FlakeFlags, json: bool, raw: bool
             Ok(())
         }
         Err(e) => Err(e.to_string()),
+    }
+}
+
+fn eval_value(ev: &Eval, cli: &Cli, inst: &Installable, json: bool, raw: bool) -> R<String> {
+    let sel = eval_locked(ev, cli, inst, Kind::Eval)?;
+    if json {
+        let mut s = String::new();
+        print::to_json(ev, &sel.value, &mut s, &mut Default::default())?;
+        Ok(s)
+    } else if raw {
+        Ok(ev.force_str(&sel.value)?.s.clone())
+    } else {
+        ev.deep_force(&sel.value)?;
+        print::print_value(ev, &sel.value, true)
     }
 }
 

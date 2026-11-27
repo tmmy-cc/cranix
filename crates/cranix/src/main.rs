@@ -21,6 +21,7 @@ mod copy_cmd;
 mod sbom_cmd;
 mod remote;
 mod flake_cmd;
+mod eval_cache;
 
 #[cfg(not(feature = "dhat-heap"))]
 #[global_allocator]
@@ -504,6 +505,32 @@ fn collect_drvs(ev: &Eval, v: &Value, out: &mut Vec<(StorePath, String)>) -> cra
     Ok(())
 }
 
+/// The derivations of a flake installable, from the evaluation cache when
+/// it holds them and every one is valid in the store.
+fn cached_installable_drvs(ev: &Eval, cli: &Cli, flags: &flake_cmd::FlakeFlags, spec: &str, drvs: &mut Vec<(StorePath, String)>) -> cranix_eval::R<()> {
+    let inst = flake_cmd::lock_installable(ev, flags, spec)?;
+    let cache = eval_cache::EvalCache::open(cli, ev, flags.impure, &inst.locked, "drvs", &inst.frag);
+    if let Some(serde_json::Value::Array(items)) = cache.as_ref().and_then(|c| c.get()) {
+        let hit: Option<Vec<(StorePath, String)>> = items
+            .iter()
+            .map(|i| {
+                let d = ev.store.dir.parse(i.get(0)?.as_str()?).ok().filter(|d| ev.store.is_valid(d))?;
+                Some((d, i.get(1)?.as_str()?.to_string()))
+            })
+            .collect();
+        if let Some(hit) = hit.filter(|h| !h.is_empty()) {
+            *drvs = hit;
+            return Ok(());
+        }
+    }
+    let sel = flake_cmd::eval_locked(ev, cli, &inst, flake_cmd::Kind::Build)?;
+    collect_drvs(ev, &sel.value, drvs)?;
+    if let Some(c) = &cache {
+        c.put(drvs.iter().map(|(d, o)| serde_json::json!([ev.store.dir.print(d), o])).collect());
+    }
+    Ok(())
+}
+
 fn cmd_instantiate(cli: &Cli, args: &[String], build: bool) -> Result<(), String> {
     let mut args = args.to_vec();
     let flags = flake_cmd::take_flake_flags(&mut args)?;
@@ -515,7 +542,7 @@ fn cmd_instantiate(cli: &Cli, args: &[String], build: bool) -> Result<(), String
     };
     let mut drvs = Vec::new();
     let r = match &installable {
-        Some(spec) => flake_cmd::eval_installable(&ev, cli, &flags, spec, flake_cmd::Kind::Build).and_then(|s| collect_drvs(&ev, &s.value, &mut drvs)),
+        Some(spec) => cached_installable_drvs(&ev, cli, &flags, spec, &mut drvs),
         None => eval_target(&ev, cli, &t).and_then(|v| collect_drvs(&ev, &v, &mut drvs)),
     };
     r.map_err(|e| render_error(&ev, cli, &e))?;
