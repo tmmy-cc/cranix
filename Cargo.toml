@@ -14,6 +14,7 @@ cranix-store = { path = "crates/cranix-store" }
 cranix-eval = { path = "crates/cranix-eval" }
 cranix-daemon = { path = "crates/cranix-daemon" }
 cranix-fetchers = { path = "crates/cranix-fetchers" }
+cranix-sbom = { path = "crates/cranix-sbom" }
 sha2 = "0.10"
 sha1 = "0.10"
 md-5 = "0.10"

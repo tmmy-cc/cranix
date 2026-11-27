@@ -1,0 +1,12 @@
+[package]
+name = "cranix-sbom"
+description = "Software bills of materials (CycloneDX, SPDX) for store closures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cranix-core.workspace = true
+cranix-store.workspace = true
+serde_json.workspace = true
+flate2 = "1"
