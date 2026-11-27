@@ -17,6 +17,7 @@ use cranix_store::build::{host_system, BuildOptions};
 use cranix_store::binary_cache::BinaryCache;
 use cranix_store::settings::Settings;
 use cranix_store::substitute::Substituters;
+use cranix_store::upload::UploadTarget;
 use cranix_store::{PathInfo, Store};
 
 fn scratch(name: &str) -> PathBuf {
@@ -212,6 +213,54 @@ fn remote_build_through_cranix_daemon() {
     let opts = BuildOptions { jobs: 1, hook: Some(Arc::new(hook)), ..Default::default() };
     let e = local.realise(&[other], &opts).unwrap_err();
     assert!(e.contains("max-jobs = 0"), "{e}");
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// The narinfo names (`<hash>.narinfo`) in the file cache `dir`.
+fn narinfos(dir: &Path) -> BTreeSet<String> {
+    std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".narinfo")).collect()
+}
+
+fn upload_to(dir: &Path) -> Option<Arc<UploadTarget>> {
+    let cache = BinaryCache::open(&format!("file://{}", dir.display())).unwrap();
+    Some(Arc::new(UploadTarget::new(cache, vec![SecretKey::from_seed("up-1", &[7; 32])], 2, true)))
+}
+
+#[test]
+fn daemon_and_remote_builds_upload_their_outputs() {
+    let root = scratch("upload");
+    let remote = Store::open_at(&root.join("remote")).unwrap();
+    let sd = remote.dir.clone();
+    let local = Store::open(sd.clone(), root.join("local/store"), root.join("local/var")).unwrap();
+
+    // The daemon uploads what it builds for its clients.
+    let sock: PathBuf = format!("/tmp/cranix-test-up-{}.sock", std::process::id()).into();
+    let config = DaemonConfig { build: BuildOptions { upload: upload_to(&root.join("daemon-cache")), ..Default::default() }, ..Default::default() };
+    let daemon = Arc::new(Daemon::new(remote, config));
+    {
+        let d = Arc::clone(&daemon);
+        let s = sock.clone();
+        std::thread::spawn(move || d.serve_socket(&s));
+    }
+    for _ in 0..100 {
+        if Path::new(&sock).exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let dep = write_drv(&local, "dep", "echo dep > $out", &[]);
+    let top = write_drv(&local, "top", "echo $dep > $out", &[(dep.clone(), "out")]);
+    let spec = format!("unix://{} {} - 2", sock.display(), host_system());
+    let hook = RemoteBuilders::new(machines::parse(&spec, &host_system()).unwrap(), 1);
+    // The local store uploads the outputs remote builders return.
+    let opts = BuildOptions { jobs: hook.total_slots(), hook: Some(Arc::new(hook)), upload: upload_to(&root.join("local-cache")), ..Default::default() };
+    let res = local.realise(&[top.clone()], &opts).unwrap();
+    let out = res[&top]["out"].clone();
+    let dep_out = local.read_derivation(&dep).unwrap().outputs["out"].path.clone().unwrap();
+    let want: BTreeSet<String> = [&out, &dep_out].iter().map(|p| format!("{}.narinfo", p.hash_part())).collect();
+    assert_eq!(narinfos(&root.join("local-cache")), want);
+    assert_eq!(narinfos(&root.join("daemon-cache")), want);
     let _ = std::fs::remove_file(&sock);
 }
 
