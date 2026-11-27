@@ -1,0 +1,139 @@
+{
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "creationInfo": {
+    "created": "1970-01-01T00:00:00Z",
+    "creators": [
+      "Tool: cranix-0.1.0"
+    ]
+  },
+  "dataLicense": "CC0-1.0",
+  "documentNamespace": "https://cranix.cc/spdx/99c1d0f9-4fa3-518d-8ad0-f8ee5dcc15bd",
+  "hasExtractedLicensingInfos": [
+    {
+      "extractedText": "Custom Licence",
+      "licenseId": "LicenseRef-Custom-Licence",
+      "name": "Custom Licence"
+    }
+  ],
+  "name": "app-2.0",
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package-035fb4feeeb9a807",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "abababababababababababababababababababababababababababababababab"
+        }
+      ],
+      "comment": "store path: /nix/store/0c6kzph7l0dcbfmjap64i0y8wd3fq1fz-app-2.0\nbinary without a list of its linked code: /nix/store/0c6kzph7l0dcbfmjap64i0y8wd3fq1fz-app-2.0/bin/static-tool",
+      "copyrightText": "NOASSERTION",
+      "description": "An application",
+      "downloadLocation": "https://example.org/app-2.0.tar.gz",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:nix/app@2.0",
+          "referenceType": "purl"
+        },
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/app@2.0",
+          "referenceType": "purl"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceLocator": "cpe:2.3:a:*:app:2.0:*:*:*:*:*:*:*",
+          "referenceType": "cpe23Type"
+        }
+      ],
+      "filesAnalyzed": false,
+      "homepage": "https://example.org/app",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT AND LicenseRef-Custom-Licence",
+      "name": "app",
+      "versionInfo": "2.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-5f36574185022a51",
+      "comment": "found in: binary",
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:golang/golang.org/x/sys@v0.1.0",
+          "referenceType": "purl"
+        }
+      ],
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "golang.org/x/sys",
+      "versionInfo": "v0.1.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-e1a4d01826d02ca4",
+      "comment": "store path: /nix/store/1b9p07z77phvv2hf6qhvhd9rcmmr9n1i-libfoo-1.2.3\nstore path: /nix/store/2whrxfwbq2c3s7x5tjm2cplxlr6p4c6d-libfoo-1.2.3-dev",
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:nix/libfoo@1.2.3",
+          "referenceType": "purl"
+        },
+        {
+          "referenceCategory": "SECURITY",
+          "referenceLocator": "cpe:2.3:a:*:libfoo:1.2.3:*:*:*:*:*:*:*",
+          "referenceType": "cpe23Type"
+        }
+      ],
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "name": "libfoo",
+      "versionInfo": "1.2.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-fccd9b318be87c84",
+      "comment": "found in: derivation",
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/serde@1.0.200",
+          "referenceType": "purl"
+        }
+      ],
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "serde",
+      "versionInfo": "1.0.200"
+    }
+  ],
+  "relationships": [
+    {
+      "relatedSpdxElement": "SPDXRef-Package-035fb4feeeb9a807",
+      "relationshipType": "DESCRIBES",
+      "spdxElementId": "SPDXRef-DOCUMENT"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-5f36574185022a51",
+      "relationshipType": "CONTAINS",
+      "spdxElementId": "SPDXRef-Package-035fb4feeeb9a807"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-e1a4d01826d02ca4",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-035fb4feeeb9a807"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-fccd9b318be87c84",
+      "relationshipType": "CONTAINS",
+      "spdxElementId": "SPDXRef-Package-035fb4feeeb9a807"
+    }
+  ],
+  "spdxVersion": "SPDX-2.3"
+}

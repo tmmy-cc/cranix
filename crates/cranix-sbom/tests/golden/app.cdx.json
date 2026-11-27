@@ -1,0 +1,145 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "bom-ref": "/nix/store/1b9p07z77phvv2hf6qhvhd9rcmmr9n1i-libfoo-1.2.3.drv",
+      "cpe": "cpe:2.3:a:*:libfoo:1.2.3:*:*:*:*:*:*:*",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "name": "libfoo",
+      "properties": [
+        {
+          "name": "nix:store_path",
+          "value": "/nix/store/1b9p07z77phvv2hf6qhvhd9rcmmr9n1i-libfoo-1.2.3"
+        },
+        {
+          "name": "nix:store_path",
+          "value": "/nix/store/2whrxfwbq2c3s7x5tjm2cplxlr6p4c6d-libfoo-1.2.3-dev"
+        }
+      ],
+      "purl": "pkg:nix/libfoo@1.2.3",
+      "type": "library",
+      "version": "1.2.3"
+    }
+  ],
+  "dependencies": [
+    {
+      "dependsOn": [
+        "/nix/store/1b9p07z77phvv2hf6qhvhd9rcmmr9n1i-libfoo-1.2.3.drv"
+      ],
+      "ref": "/nix/store/0c6kzph7l0dcbfmjap64i0y8wd3fq1fz-app-2.0.drv"
+    },
+    {
+      "dependsOn": [],
+      "ref": "/nix/store/1b9p07z77phvv2hf6qhvhd9rcmmr9n1i-libfoo-1.2.3.drv"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "bom-ref": "/nix/store/0c6kzph7l0dcbfmjap64i0y8wd3fq1fz-app-2.0.drv",
+      "components": [
+        {
+          "bom-ref": "/nix/store/0c6kzph7l0dcbfmjap64i0y8wd3fq1fz-app-2.0.drv#pkg:cargo/serde@1.0.200",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+            }
+          ],
+          "name": "serde",
+          "properties": [
+            {
+              "name": "cranix:found-in",
+              "value": "derivation"
+            }
+          ],
+          "purl": "pkg:cargo/serde@1.0.200",
+          "type": "library",
+          "version": "1.0.200"
+        },
+        {
+          "bom-ref": "/nix/store/0c6kzph7l0dcbfmjap64i0y8wd3fq1fz-app-2.0.drv#pkg:golang/golang.org/x/sys@v0.1.0",
+          "name": "golang.org/x/sys",
+          "properties": [
+            {
+              "name": "cranix:found-in",
+              "value": "binary"
+            },
+            {
+              "name": "cranix:checksum",
+              "value": "h1:abc="
+            }
+          ],
+          "purl": "pkg:golang/golang.org/x/sys@v0.1.0",
+          "type": "library",
+          "version": "v0.1.0"
+        }
+      ],
+      "cpe": "cpe:2.3:a:*:app:2.0:*:*:*:*:*:*:*",
+      "description": "An application",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://example.org/app"
+        },
+        {
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "abababababababababababababababababababababababababababababababab"
+            }
+          ],
+          "type": "distribution",
+          "url": "https://example.org/app-2.0.tar.gz"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        },
+        {
+          "license": {
+            "name": "Custom Licence"
+          }
+        }
+      ],
+      "name": "app",
+      "properties": [
+        {
+          "name": "nix:store_path",
+          "value": "/nix/store/0c6kzph7l0dcbfmjap64i0y8wd3fq1fz-app-2.0"
+        },
+        {
+          "name": "cranix:purl",
+          "value": "pkg:nix/app@2.0"
+        },
+        {
+          "name": "cranix:unlisted-binary",
+          "value": "/nix/store/0c6kzph7l0dcbfmjap64i0y8wd3fq1fz-app-2.0/bin/static-tool"
+        }
+      ],
+      "purl": "pkg:cargo/app@2.0",
+      "type": "application",
+      "version": "2.0"
+    },
+    "tools": {
+      "components": [
+        {
+          "name": "cranix",
+          "type": "application",
+          "version": "0.1.0"
+        }
+      ]
+    }
+  },
+  "serialNumber": "urn:uuid:8b49d49b-4ad4-53b5-9b65-f27f6c07e1d5",
+  "specVersion": "1.6",
+  "version": 1
+}
