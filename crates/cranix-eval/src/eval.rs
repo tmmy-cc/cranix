@@ -10,7 +10,7 @@ use cranix_core::{Derivation, DrvHash, FileIngestion, StorePath};
 use cranix_store::Store;
 
 use crate::ast::{BinOp, Pos};
-use crate::compile::{Compiler, Expr, Key, LambdaDef};
+use crate::compile::{AttrsDef, Compiler, Expr, Key, LambdaDef};
 use crate::parser::{canon_path, Parser};
 use crate::value::*;
 
@@ -214,7 +214,7 @@ impl Eval {
                 ast
             }
         };
-        Compiler::new(&self.globals).compile(ast).map_err(|e| {
+        let e = Compiler::new(&self.globals).compile(ast).map_err(|e| {
             let msg = match e.prev {
                 Some(p) => format!("{} at {}", e.msg, self.fmt_pos(p)),
                 None => e.msg,
@@ -223,7 +223,8 @@ impl Eval {
             err.pos = Some(e.pos);
             err.hint = e.hint;
             Box::new(err)
-        })
+        })?;
+        Ok(e)
     }
 
     pub fn eval_string(&self, src: &str, base_dir: &str) -> R<Value> {
@@ -328,104 +329,16 @@ impl Eval {
                 self.undefined_with_var(name, *pos, env)
             }
             Expr::Select { e, path, default, pos } => {
-                let mut v = self.eval(e, env)?;
-                for k in path.iter() {
-                    let k = self.key(k, env)?;
-                    match &v {
-                        Value::Attrs(a) => match a.get(&k) {
-                            Some(x) => {
-                                let x = x.clone();
-                                // A black hole reached here means the attribute
-                                // depends on itself, so point at the selection.
-                                let r = self.locate(self.force(&x), *pos);
-                                v = self.with_frame(r, || {
-                                    Frame::new(format!("while evaluating the attribute '{k}'"), Some(*pos))
-                                })?;
-                            }
-                            None => {
-                                if let Some(d) = default {
-                                    return self.eval(d, env);
-                                }
-                                let hint = crate::error::did_you_mean(k.as_str(), a.iter().map(|(s, _)| s.as_str()));
-                                return err_hint(Some(*pos), format!("attribute '{k}' missing"), hint);
-                            }
-                        },
-                        _ => {
-                            if let Some(d) = default {
-                                return self.eval(d, env);
-                            }
-                            return err_at(
-                                *pos,
-                                format!(
-                                    "expected a set but found {} while selecting the attribute '{k}': {}",
-                                    v.describe(),
-                                    self.preview(&v)
-                                ),
-                            );
-                        }
-                    }
-                }
-                Ok(v)
+                let v = self.eval(e, env)?;
+                self.select(v, path, *default, env, *pos)
             }
             Expr::HasAttr { e, path } => {
-                // Each path element is forced only when the next one is
-                // looked up in it, so the value at the end of the path
-                // stays lazy.
-                let mut v = self.eval(e, env)?;
-                for (i, k) in path.iter().enumerate() {
-                    if i > 0 {
-                        v = self.force(&v)?;
-                    }
-                    let k = self.key(k, env)?;
-                    match &v {
-                        Value::Attrs(a) => match a.get(&k) {
-                            Some(x) => v = x.clone(),
-                            None => return Ok(Value::Bool(false)),
-                        },
-                        _ => return Ok(Value::Bool(false)),
-                    }
-                }
-                Ok(Value::Bool(true))
+                let v = self.eval(e, env)?;
+                self.has_attr(v, path, env)
             }
-            Expr::Attrs(def) => {
-                let env2 = if def.new_env {
-                    let n = def.slots.len();
-                    let en = Env::new(Some(env.clone()), vec![Value::Null; n]);
-                    for (i, s) in def.slots.iter().enumerate() {
-                        let v = if def.rec { self.lazy(s, &en, false) } else { self.lazy(s, env, true) };
-                        en.set(i, v);
-                    }
-                    en
-                } else {
-                    env.clone()
-                };
-                let mut entries: Vec<(Sym, Value)> =
-                    def.statics.iter().map(|(k, e)| (k.clone(), self.lazy(e, &env2, true))).collect();
-                if !def.dynamics.is_empty() {
-                    for (k, v) in def.dynamics.iter() {
-                        let kv = self.eval(k, &env2)?;
-                        if let Value::Null = kv {
-                            continue;
-                        }
-                        let ks = Sym::new(&self.force_str(&kv)?.s);
-                        entries.push((ks, self.lazy(v, &env2, true)));
-                    }
-                    entries.sort_by(|a, b| a.0.cmp(&b.0));
-                    if entries.windows(2).any(|w| w[0].0 == w[1].0) {
-                        let d = entries.windows(2).find(|w| w[0].0 == w[1].0).unwrap()[0].0.clone();
-                        return err(format!("dynamic attribute '{d}' already defined"));
-                    }
-                }
-                Ok(Value::attrs(Attrs::from_sorted(entries)))
-            }
-            Expr::Let { slots, body } => {
-                let en = Env::new(Some(env.clone()), vec![Value::Null; slots.len()]);
-                for (i, s) in slots.iter().enumerate() {
-                    en.set(i, self.lazy(s, &en, false));
-                }
-                self.eval(body, &en)
-            }
-            Expr::List(items) => Ok(Value::list(items.iter().map(|i| self.lazy(i, env, true)).collect())),
+            Expr::Attrs(def) => self.make_attrs(def, env),
+            Expr::Let { slots, body } => self.eval(body, &self.let_env(slots, env)),
+            Expr::List(items) => Ok(self.make_list(items, env)),
             Expr::Lambda(def) => Ok(Value::Lambda(Rc::new(Closure { def, env: env.clone() }))),
             Expr::App { f, args, pos } => {
                 let mut fv = self.eval(f, env)?;
@@ -435,53 +348,29 @@ impl Eval {
                 }
                 Ok(fv)
             }
-            Expr::With { attrs, body } => {
-                let en = Rc::new(Env { parent: Some(env.clone()), kind: EnvKind::With(self.lazy(attrs, env, true)) });
-                self.eval(body, &en)
-            }
+            Expr::With { attrs, body } => self.eval(body, &self.with_env(attrs, env)),
             Expr::If { c, t, e, pos } => {
-                let cv = self.with_frame(self.eval(c, env), || Frame::detail("while evaluating a branch condition", Some(*pos)))?;
-                match cv {
-                    Value::Bool(true) => self.eval(t, env),
-                    Value::Bool(false) => self.eval(e, env),
-                    v => err_at(*pos, format!("expected a Boolean but found {} in the condition of 'if': {}", v.describe(), self.preview(&v))),
+                let cv = self.with_frame(self.eval(c, env), || Self::cond_frame(*pos))?;
+                if self.if_cond(cv, *pos)? {
+                    self.eval(t, env)
+                } else {
+                    self.eval(e, env)
                 }
             }
             Expr::Assert { c, body, pos } => {
-                let cv = self.with_frame(self.eval(c, env), || {
-                    Frame::detail(format!("while evaluating the condition of the assertion '{}'", self.assert_text(*pos)), Some(*pos))
-                })?;
-                match cv {
-                    Value::Bool(true) => self.eval(body, env),
-                    Value::Bool(false) => {
-                        let mut e = EvalError::new(ErrKind::Assert, format!("assertion '{}' failed", self.assert_text(*pos)));
-                        e.pos = Some(*pos);
-                        Err(Box::new(e))
-                    }
-                    v => err_at(
-                        *pos,
-                        format!(
-                            "expected a Boolean but found {} in the condition of the assertion '{}': {}",
-                            v.describe(),
-                            self.assert_text(*pos),
-                            self.preview(&v)
-                        ),
-                    ),
-                }
+                let cv = self.with_frame(self.eval(c, env), || self.assert_frame(*pos))?;
+                self.assert_check(cv, *pos)?;
+                self.eval(body, env)
             }
             Expr::BinOp { op, l, r, pos } => self.locate(self.binop(*op, l, r, env, *pos), *pos),
             Expr::Not(e, pos) => {
                 let v = self.eval(e, env)?;
-                match v {
-                    Value::Bool(b) => Ok(Value::Bool(!b)),
-                    v => err_at(*pos, format!("expected a Boolean but found {} in the operand of '!': {}", v.describe(), self.preview(&v))),
-                }
+                self.not(v, *pos)
             }
-            Expr::Neg(e, pos) => match self.eval(e, env)? {
-                Value::Int(n) => n.checked_neg().map(Value::Int).ok_or(()).or_else(|_| err_at(*pos, format!("integer overflow in negating {n}"))),
-                Value::Float(f) => Ok(Value::Float(-f)),
-                v => err_at(*pos, format!("cannot negate {}: {}", v.describe(), self.preview(&v))),
-            },
+            Expr::Neg(e, pos) => {
+                let v = self.eval(e, env)?;
+                self.neg(v, *pos)
+            }
             Expr::Concat { parts, path, pos } => {
                 if *path {
                     let mut s = match self.eval(parts[0], env)? {
@@ -490,12 +379,7 @@ impl Eval {
                     };
                     for p in &parts[1..] {
                         let v = self.eval(p, env)?;
-                        let mut ctx = Context::new();
-                        let o = CoerceOpts { more: false, copy: false };
-                        s.push_str(&self.locate(self.coerce_to_string(&v, &o, &mut ctx), *pos)?);
-                        if !ctx.is_empty() {
-                            return err_at(*pos, "a string that refers to a store path cannot be appended to a path");
-                        }
+                        self.path_part(&mut s, &v, *pos)?;
                     }
                     return Ok(Value::Path(canon_path(&s).into()));
                 }
@@ -503,12 +387,197 @@ impl Eval {
                 let mut ctx = Context::new();
                 for p in parts.iter() {
                     let v = self.eval(p, env)?;
-                    let part = self.locate(self.coerce_to_string(&v, &CoerceOpts { more: false, copy: true }, &mut ctx), *pos)?;
-                    s.push_str(&part);
+                    self.str_part(&mut s, &mut ctx, &v, *pos)?;
                 }
                 Ok(Value::str_ctx(s, ctx))
             }
             Expr::CurPos(pos) => Ok(self.pos_value(*pos)),
+        }
+    }
+
+    // ---- operations shared by the tree walker and the VM ----
+
+    pub(crate) fn select(&self, mut v: Value, path: &[Key], default: Option<&'static Expr>, env: &Rc<Env>, pos: Pos) -> R<Value> {
+        for k in path.iter() {
+            let k = self.key(k, env)?;
+            match &v {
+                Value::Attrs(a) => match a.get(&k) {
+                    Some(x) => {
+                        let x = x.clone();
+                        // A black hole reached here means the attribute
+                        // depends on itself, so point at the selection.
+                        let r = self.locate(self.force(&x), pos);
+                        v = self.with_frame(r, || {
+                            Frame::new(format!("while evaluating the attribute '{k}'"), Some(pos))
+                        })?;
+                    }
+                    None => {
+                        if let Some(d) = default {
+                            return self.eval(d, env);
+                        }
+                        let hint = crate::error::did_you_mean(k.as_str(), a.iter().map(|(s, _)| s.as_str()));
+                        return err_hint(Some(pos), format!("attribute '{k}' missing"), hint);
+                    }
+                },
+                _ => {
+                    if let Some(d) = default {
+                        return self.eval(d, env);
+                    }
+                    return err_at(
+                        pos,
+                        format!(
+                            "expected a set but found {} while selecting the attribute '{k}': {}",
+                            v.describe(),
+                            self.preview(&v)
+                        ),
+                    );
+                }
+            }
+        }
+        Ok(v)
+    }
+
+    pub(crate) fn has_attr(&self, mut v: Value, path: &[Key], env: &Rc<Env>) -> R<Value> {
+        // Each path element is forced only when the next one is looked up
+        // in it, so the value at the end of the path stays lazy.
+        for (i, k) in path.iter().enumerate() {
+            if i > 0 {
+                v = self.force(&v)?;
+            }
+            let k = self.key(k, env)?;
+            match &v {
+                Value::Attrs(a) => match a.get(&k) {
+                    Some(x) => v = x.clone(),
+                    None => return Ok(Value::Bool(false)),
+                },
+                _ => return Ok(Value::Bool(false)),
+            }
+        }
+        Ok(Value::Bool(true))
+    }
+
+    pub(crate) fn make_attrs(&self, def: &'static AttrsDef, env: &Rc<Env>) -> R<Value> {
+        let env2 = if def.new_env {
+            let n = def.slots.len();
+            let en = Env::new(Some(env.clone()), vec![Value::Null; n]);
+            for (i, s) in def.slots.iter().enumerate() {
+                let v = if def.rec { self.lazy(s, &en, false) } else { self.lazy(s, env, true) };
+                en.set(i, v);
+            }
+            en
+        } else {
+            env.clone()
+        };
+        let mut entries: Vec<(Sym, Value)> =
+            def.statics.iter().map(|(k, e)| (k.clone(), self.lazy(e, &env2, true))).collect();
+        if !def.dynamics.is_empty() {
+            for (k, v) in def.dynamics.iter() {
+                let kv = self.eval(k, &env2)?;
+                if let Value::Null = kv {
+                    continue;
+                }
+                let ks = Sym::new(&self.force_str(&kv)?.s);
+                entries.push((ks, self.lazy(v, &env2, true)));
+            }
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            if entries.windows(2).any(|w| w[0].0 == w[1].0) {
+                let d = entries.windows(2).find(|w| w[0].0 == w[1].0).unwrap()[0].0.clone();
+                return err(format!("dynamic attribute '{d}' already defined"));
+            }
+        }
+        Ok(Value::attrs(Attrs::from_sorted(entries)))
+    }
+
+    pub(crate) fn let_env(&self, slots: &'static [&'static Expr], env: &Rc<Env>) -> Rc<Env> {
+        let en = Env::new(Some(env.clone()), vec![Value::Null; slots.len()]);
+        for (i, s) in slots.iter().enumerate() {
+            en.set(i, self.lazy(s, &en, false));
+        }
+        en
+    }
+
+    pub(crate) fn with_env(&self, attrs: &'static Expr, env: &Rc<Env>) -> Rc<Env> {
+        Rc::new(Env { parent: Some(env.clone()), kind: EnvKind::With(self.lazy(attrs, env, true)) })
+    }
+
+    pub(crate) fn make_list(&self, items: &'static [&'static Expr], env: &Rc<Env>) -> Value {
+        Value::list(items.iter().map(|i| self.lazy(i, env, true)).collect())
+    }
+
+    pub(crate) fn cond_frame(pos: Pos) -> Frame {
+        Frame::detail("while evaluating a branch condition", Some(pos))
+    }
+
+    pub(crate) fn assert_frame(&self, pos: Pos) -> Frame {
+        Frame::detail(format!("while evaluating the condition of the assertion '{}'", self.assert_text(pos)), Some(pos))
+    }
+
+    pub(crate) fn if_cond(&self, v: Value, pos: Pos) -> R<bool> {
+        match v {
+            Value::Bool(b) => Ok(b),
+            v => err_at(pos, format!("expected a Boolean but found {} in the condition of 'if': {}", v.describe(), self.preview(&v))),
+        }
+    }
+
+    pub(crate) fn assert_check(&self, v: Value, pos: Pos) -> R<()> {
+        match v {
+            Value::Bool(true) => Ok(()),
+            Value::Bool(false) => {
+                let mut e = EvalError::new(ErrKind::Assert, format!("assertion '{}' failed", self.assert_text(pos)));
+                e.pos = Some(pos);
+                Err(Box::new(e))
+            }
+            v => err_at(
+                pos,
+                format!(
+                    "expected a Boolean but found {} in the condition of the assertion '{}': {}",
+                    v.describe(),
+                    self.assert_text(pos),
+                    self.preview(&v)
+                ),
+            ),
+        }
+    }
+
+    pub(crate) fn not(&self, v: Value, pos: Pos) -> R<Value> {
+        match v {
+            Value::Bool(b) => Ok(Value::Bool(!b)),
+            v => err_at(pos, format!("expected a Boolean but found {} in the operand of '!': {}", v.describe(), self.preview(&v))),
+        }
+    }
+
+    pub(crate) fn neg(&self, v: Value, pos: Pos) -> R<Value> {
+        match v {
+            Value::Int(n) => n.checked_neg().map(Value::Int).ok_or(()).or_else(|_| err_at(pos, format!("integer overflow in negating {n}"))),
+            Value::Float(f) => Ok(Value::Float(-f)),
+            v => err_at(pos, format!("cannot negate {}: {}", v.describe(), self.preview(&v))),
+        }
+    }
+
+    pub(crate) fn path_part(&self, s: &mut String, v: &Value, pos: Pos) -> R<()> {
+        let mut ctx = Context::new();
+        let o = CoerceOpts { more: false, copy: false };
+        s.push_str(&self.locate(self.coerce_to_string(v, &o, &mut ctx), pos)?);
+        if !ctx.is_empty() {
+            return err_at(pos, "a string that refers to a store path cannot be appended to a path");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn str_part(&self, s: &mut String, ctx: &mut Context, v: &Value, pos: Pos) -> R<()> {
+        let part = self.locate(self.coerce_to_string(v, &CoerceOpts { more: false, copy: true }, ctx), pos)?;
+        s.push_str(&part);
+        Ok(())
+    }
+
+    /// Checks an operand of `&&`, `||` or `->`.
+    pub(crate) fn bool_operand(&self, v: Value, side: &str, op: BinOp, pos: Pos) -> R<bool> {
+        match v {
+            Value::Bool(b) => Ok(b),
+            v => err_at(
+                pos,
+                format!("expected a Boolean but found {} in the {side} operand of {}: {}", v.describe(), op_name(op), self.preview(&v)),
+            ),
         }
     }
 
@@ -533,13 +602,8 @@ impl Eval {
 
     /// Evaluates an operand of `&&`, `||` or `->`.
     fn eval_bool(&self, e: &'static Expr, env: &Rc<Env>, side: &str, op: BinOp, pos: Pos) -> R<bool> {
-        match self.eval(e, env)? {
-            Value::Bool(b) => Ok(b),
-            v => err_at(
-                pos,
-                format!("expected a Boolean but found {} in the {side} operand of {}: {}", v.describe(), op_name(op), self.preview(&v)),
-            ),
-        }
+        let v = self.eval(e, env)?;
+        self.bool_operand(v, side, op, pos)
     }
 
     /// Source text of the condition of the `assert` at `pos`.
@@ -897,6 +961,10 @@ impl Eval {
         }
         let a = self.eval(l, env)?;
         let b = self.eval(r, env)?;
+        self.binop_values(op, a, b)
+    }
+
+    pub(crate) fn binop_values(&self, op: BinOp, a: Value, b: Value) -> R<Value> {
         match op {
             BinOp::Eq => Ok(Value::Bool(self.eq(&a, &b)?)),
             BinOp::Neq => Ok(Value::Bool(!self.eq(&a, &b)?)),
