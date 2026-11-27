@@ -256,6 +256,11 @@
                                 <p>Each output goes to a binary cache as soon as it is built, closure by closure, so the cache is complete even if the build stops.</p>
                             </li>
                             <li class="feature reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 3h14v18H5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M8 8h8M8 12h8M8 16h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                                <h3>SBOM generation</h3>
+                                <p>CycloneDX and SPDX bills of materials for a package or a NixOS system, with licences, purls and the crates and modules inside, the same on every run.</p>
+                            </li>
+                            <li class="feature reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 4h8v6H3zM13 14h8v6h-8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M7 10v4h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                                 <h3>Daemon and remote builders</h3>
                                 <p>The Nix daemon protocol in both directions: Nix clients can use a cranix store, and cranix can use a Nix daemon. Builds go to other machines over <code>ssh-ng://</code> or <code>ssh://</code>.</p>
@@ -281,11 +286,6 @@
                     <div>
                         <h3 class="feature-group-title reveal"><span class="status status-planned">Planned</span></h3>
                         <ul class="features" data-stagger>
-                            <li class="feature feature-planned reveal">
-                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 3h14v18H5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M8 8h8M8 12h8M8 16h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-                                <h3>SBOM generation</h3>
-                                <p>A software bill of materials for any closure, in standard formats, straight from the derivation graph.</p>
-                            </li>
                             <li class="feature feature-planned reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10.5 4a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13zM15.5 15.5 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path class="accent" d="M10.5 8v3M10.5 13.5v.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
                                 <h3>Vulnerability scanning</h3>

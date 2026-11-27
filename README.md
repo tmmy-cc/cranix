@@ -36,6 +36,7 @@ bootstrap graph hashes identically.
 | `cranix-eval`   | 7.8k  | Lexer/parser, scope-resolving compiler, lazy evaluator, ~120 builtins including `fromTOML` and `toXML`, `derivationStrict`, printing, JSON, error rendering with source snippets and traces |
 | `cranix-daemon` | 3.8k  | Nix worker protocol (up to 1.37) and serve protocol (2.7): `cranix daemon`, `cranix store serve`, clients for `unix://`, `ssh-ng://` and `ssh://` stores, remote builders |
 | `cranix-fetchers` | 3.0k | Fetchers for files, tarballs, paths, Git and GitHub/GitLab/SourceHut, the fetcher cache, flake registries |
+| `cranix-sbom`   | 1.6k  | CycloneDX and SPDX SBOMs of closures and lock files, Go and Rust binary metadata |
 | `cranix`        | 2.4k  | CLI, flake commands and installables |
 
 The core crate has no knowledge of the evaluator or the file system layout of
@@ -240,6 +241,57 @@ nix copy --from http://127.0.0.1:5000 /nix/store/...-hello-2.12.1
 files of any cache URL cranix opens, so that Nix and other HTTP clients read
 a registry cache. It prints its URL (`http://127.0.0.1:5000` by default)
 and streams NARs as they arrive.
+
+**SBOMs.** `cranix sbom INSTALLABLE` (or a file, `--expr`, `-A`) writes a
+software bill of materials as CycloneDX 1.6 JSON, or SPDX 2.3 JSON with
+`--format spdx`, to standard output or `-o FILE`. It builds or substitutes
+the outputs and follows their runtime references; for a path from the host
+store, the references come from a scan for the hashes of the build graph.
+`--build-time` takes the build graph instead and needs no outputs.
+
+* Components: the outputs of one derivation form one component, named by
+  `pname` and `version` (else the name split before the version), with each
+  store path as a `nix:store_path` property. Paths without a version, such
+  as sources and generated files, are no components; dependencies pass
+  through them. Downloads (fixed-output derivations) are the sources of the
+  components that use them, with their URL and file hash.
+* Identifiers: `pkg:nix/NAME@VERSION`, and the ecosystem purl where the
+  derivation shows one (`pkg:pypi` for Python packages, `pkg:npm` with
+  `npmDeps`, `pkg:cargo` with `cargoDeps`, `pkg:golang` from a Go binary's
+  main module), which CycloneDX gets as `purl` and the others as
+  properties. CPEs are `meta.identifiers.cpe`, else built from name and
+  version with an unknown vendor.
+* Metadata: licences (SPDX IDs, other licences by name), descriptions and
+  homepages come from `meta` of the derivations reachable from the
+  evaluated value through its build-input attributes. For a NixOS
+  configuration (`.#nixosConfigurations.NAME`) the SBOM describes
+  `config.system.build.toplevel`, and the metadata also comes from
+  `environment.systemPackages`, `systemd.packages`, `services.udev.packages`,
+  the kernel and `hardware.firmware`.
+* Linked code, by default from the derivations: crate downloads
+  (`crate-NAME-VERSION.tar.gz`), the `Cargo.lock` of the vendored
+  `cargoDeps` (a tarball or directory) and the `modules.txt` of
+  `goModules`, which are fetched when missing (`--no-fetch-deps` keeps to
+  what is in the store). They are listed below the package as nested
+  components with `cranix:found-in`.
+* `--scan-binaries` also reads ELF and Mach-O files: the module list of Go
+  binaries and the crate list `cargo auditable` writes into `.dep-v0`, and
+  names executables with statically linked code and no such list
+  (`cranix:unlisted-binary`), so the gaps show. `--scan-sources` reads
+  `Cargo.lock` and `package-lock.json` files in unpacked sources.
+* `cranix sbom lock Cargo.lock|package-lock.json` writes the SBOM of a lock
+  file, and `--merge DOC` adds the components of CycloneDX documents to an
+  SBOM.
+* The output is deterministic: no timestamp, components and dependencies
+  sorted, and the serial number (SPDX: the namespace) a UUID made from the
+  content. SPDX requires a creation time; it is `SOURCE_DATE_EPOCH`, else
+  the Unix epoch.
+
+```sh
+cranix sbom nixpkgs#ripgrep -o ripgrep.cdx.json
+cranix sbom .#nixosConfigurations.target --build-time --format spdx -o system.spdx.json
+cranix sbom lock ./Cargo.lock -o deps.cdx.json
+```
 
 **Settings.** One configuration value, in `nix.conf` syntax, feeds builds,
 substitution, fetchers, experimental features, remote builders and the
@@ -457,6 +509,14 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
   The unit tests round-trip a `flake.lock` written by Nix.
 * `tests/build.nix` exercises the builder: parallel leaves, references,
   `passAsFile`, multiple outputs and a fixed-output derivation.
+* `cranix-sbom` compares the CycloneDX and SPDX documents of a small SBOM
+  with golden files, and the `sbom` integration test of the CLI builds a
+  closure with `meta`, vendored crates and Go modules and checks the
+  components, both formats, lock files, merging, `--build-time` and that
+  two runs give identical documents. `tests/sbom-schema.py` validates the
+  golden files and generated SBOMs against the CycloneDX 1.6 and SPDX 2.3
+  schemas in `crates/cranix-sbom/tests/schemas` (it needs Python's
+  `jsonschema`).
 * The `copy_filters` integration test of the CLI builds a small graph
   (a source, a download, packages, a generated unit, a build input matched
   by name, a system toplevel and a test) and checks each path type and

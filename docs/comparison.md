@@ -149,6 +149,11 @@ Nix's single-process, single-machine shape:
   class (`system`, `test`), spreading name matches to everything built
   from them, so a shared cache can hold the generic builds of a system
   image without its configuration; `copy --dry-run` explains each choice.
+* `cranix sbom` writes deterministic CycloneDX 1.6 and SPDX 2.3 SBOMs of a
+  package or NixOS system from its runtime closure or build graph, with
+  licences from `meta`, ecosystem purls, the crates and Go modules its
+  derivations vendor, and optionally what Go and Rust binaries record; Nix
+  has no SBOM command.
 
 ### Measured against Nix 2.24
 
