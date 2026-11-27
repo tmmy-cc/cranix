@@ -18,6 +18,7 @@ use cranix_store::Store;
 
 mod cache_serve;
 mod copy_cmd;
+mod sbom_cmd;
 mod remote;
 mod flake_cmd;
 
@@ -53,6 +54,9 @@ commands:
         [--to-nars DIR] [--dry-run] [--type TYPES] [--exclude-host GLOB] [--exclude-name GLOB]
         [--exclude-class system|test] [--exclude-local]   choose what is copied
   cache serve [--listen ADDR:PORT] URL           serve a binary cache (e.g. gitlab://, github://) over HTTP
+  sbom [FILE | --expr E | INSTALLABLE] [-A ATTR] [--format cyclonedx|spdx] [-o FILE]
+        [--build-time] [--scan-binaries] [--scan-sources] [--merge DOC]   SBOM of a package or NixOS system
+  sbom lock Cargo.lock|package-lock.json        SBOM of a lock file
   key generate-secret --key-name NAME | key convert-secret-to-public < KEY
   config show [--show-secrets] [NAME]            print the settings in effect
   store serve [--write]                          serve the store to ssh:// clients (also: --serve)
@@ -302,6 +306,7 @@ fn run() -> Result<(), String> {
         "--serve" => serve(&cli, &args),
         "store" => cmd_store(&cli, &args),
         "copy" => copy_cmd::cmd_copy(&cli, &args),
+        "sbom" => sbom_cmd::cmd_sbom(&cli, &args),
         "cache" => cache_serve::cmd_cache(&cli.settings, &args),
         "key" => cmd_key(&args),
         "config" => cmd_config(&cli, &args),
