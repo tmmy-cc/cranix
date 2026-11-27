@@ -161,6 +161,7 @@ dependencies = [
  "cranix-store",
  "regex",
  "serde_json",
+ "smallvec",
 ]
 
 [[package]]
