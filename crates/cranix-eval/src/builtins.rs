@@ -484,7 +484,8 @@ pub static PRIMOPS: &[PrimOp] = &[
         // A trailing `/` or `/.` asks whether the path is a directory.
         let must_be_dir = p.ends_with('/') || p.ends_with("/.");
         let real = ev.store.resolve(&canon_path(&p));
-        Ok(Value::Bool(if must_be_dir { real.is_dir() } else { real.exists() }))
+        // The last component is not followed, so a dangling symlink exists.
+        Ok(Value::Bool(if must_be_dir { real.is_dir() } else { real.symlink_metadata().is_ok() }))
     }),
     prim!("placeholder", 1, |ev, a| {
         let o = ev.force_plain_str(&a[0])?;
