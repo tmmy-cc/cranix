@@ -170,6 +170,41 @@ impl Eval {
         (name.clone(), line, col)
     }
 
+    /// Applies the `__overrides` attribute of a recursive set: each of its
+    /// attributes replaces the one of the same name, in the set and in the
+    /// scope its bindings see, or is added.
+    fn apply_overrides(&self, def: &crate::compile::AttrsDef, env: &Rc<Env>, entries: &mut Vec<(Sym, Value)>) -> R<()> {
+        let key = Sym::new("__overrides");
+        if def.statics.binary_search_by(|(k, _)| k.cmp(&key)).is_err() {
+            return Ok(());
+        }
+        let Some((_, v)) = entries.iter().find(|(k, _)| *k == key) else { return Ok(()) };
+        let v = v.clone();
+        let ov = self.with_frame(self.force_attrs(&v), || Frame::new("while evaluating the `__overrides` attribute", None))?;
+        let mut added = false;
+        for (k, x) in ov.iter() {
+            match def.statics.binary_search_by(|(s, _)| s.cmp(k)) {
+                Ok(j) => {
+                    env.set(j, x.clone());
+                    if let Some(e) = entries.iter_mut().find(|(s, _)| s == k) {
+                        e.1 = x.clone();
+                    }
+                }
+                Err(_) => match entries.iter_mut().find(|(s, _)| s == k) {
+                    Some(e) => e.1 = x.clone(),
+                    None => {
+                        entries.push((k.clone(), x.clone()));
+                        added = true;
+                    }
+                },
+            }
+        }
+        if added {
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+        Ok(())
+    }
+
     /// Adds a frame to the trace of an error passing through.
     fn with_frame<T>(&self, r: R<T>, frame: impl FnOnce() -> Frame) -> R<T> {
         r.map_err(|mut e| {
@@ -403,6 +438,9 @@ impl Eval {
                         let d = entries.windows(2).find(|w| w[0].0 == w[1].0).unwrap()[0].0.clone();
                         return err(format!("dynamic attribute '{d}' already defined"));
                     }
+                }
+                if def.rec {
+                    self.apply_overrides(def, &env2, &mut entries)?;
                 }
                 Ok(Value::attrs(Attrs::from_sorted(entries).with_positions(def.positions)))
             }
