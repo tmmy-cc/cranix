@@ -12,6 +12,7 @@ pub mod binaries;
 pub mod cyclonedx;
 pub mod lock;
 pub mod spdx;
+pub mod vuln;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
