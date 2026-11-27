@@ -13,9 +13,10 @@ use cranix_eval::{print, Eval, Options, RenderOptions, Value};
 use cranix_store::binary_cache::{read_secret_keys, redact_url, BinaryCache};
 use cranix_store::build::{default_root, BuildOptions};
 use cranix_store::settings::{Kind, Settings};
-use cranix_store::substitute::{http_client, trusted_keys, Substituters};
+use cranix_store::substitute::{open_cache, trusted_keys, Substituters};
 use cranix_store::Store;
 
+mod cache_serve;
 mod remote;
 mod flake_cmd;
 
@@ -991,7 +992,7 @@ fn cache_closure(cache: &BinaryCache, dir: &cranix_core::StoreDir, root: &StoreP
 /// `store path-info --store URL`: reads narinfos from a binary cache.
 fn cmd_cache_path_info(cli: &Cli, url: &str, args: &[String]) -> Result<(), String> {
     let a = parse_path_info_args(args)?;
-    let cache = BinaryCache::open(url)?.with_http(http_client(&cli.settings));
+    let cache = open_cache(url, &cli.settings)?;
     let dir = cranix_core::StoreDir::new(cache.info()?.store_dir);
     let mut infos = NarInfos::new();
     let mut roots = Vec::new();
@@ -1076,7 +1077,7 @@ fn cmd_copy(cli: &Cli, args: &[String]) -> Result<(), String> {
     match (to, from) {
         (Some(to), None) => {
             let s = &cli.settings;
-            let cache = BinaryCache::open(&to)?.with_http(http_client(s));
+            let cache = open_cache(&to, s)?;
             // Uploads replace what the store remembers about this cache.
             let disk = store.narinfo_cache(&cache.url, s.narinfo_cache_positive_ttl, s.narinfo_cache_negative_ttl);
             let cache = cache.with_narinfo_cache(disk);
@@ -1125,7 +1126,7 @@ fn cmd_copy(cli: &Cli, args: &[String]) -> Result<(), String> {
         }
         (None, Some(from)) => {
             let s = &cli.settings;
-            let cache = BinaryCache::open(&from)?.with_http(http_client(s));
+            let cache = open_cache(&from, s)?;
             let keys = trusted_keys(&s.trusted_public_keys);
             store.set_substituters(
                 Substituters::new(vec![cache], keys, check_sigs, s.max_substitution_jobs)

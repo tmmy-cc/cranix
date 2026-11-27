@@ -17,6 +17,7 @@ use cranix_core::{nar, NarInfo, StoreDir};
 
 use crate::http::HttpClient;
 use crate::narinfo_cache::NarinfoCache;
+use crate::registry::{Layout, Registry};
 use crate::{fsutil, PathInfo, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -264,6 +265,7 @@ pub fn redact_url(url: &str) -> String {
 enum Location {
     File(PathBuf),
     Http,
+    Registry(Box<dyn Registry>),
 }
 
 pub struct BinaryCache {
@@ -271,6 +273,8 @@ pub struct BinaryCache {
     pub url: String,
     location: Location,
     params: BTreeMap<String, String>,
+    /// Where uploaded NARs go.
+    layout: Layout,
     http: HttpClient,
     disk: Option<NarinfoCache>,
     info: OnceLock<std::result::Result<CacheInfo, String>>,
@@ -283,7 +287,8 @@ fn tmp_name(what: &str) -> String {
 }
 
 impl BinaryCache {
-    /// Opens `file:///dir` or `http(s)://host/path`, with optional
+    /// Opens `file:///dir`, `http(s)://host/path`, `gitlab://host/group/project`
+    /// or `github://owner/repo`, with optional
     /// `?compression=…&secret-key=…&priority=…` parameters.
     pub fn open(url: &str) -> Result<BinaryCache> {
         let (base, query) = url.split_once('?').unwrap_or((url, ""));
@@ -300,10 +305,16 @@ impl BinaryCache {
             Location::File(PathBuf::from(p))
         } else if base.starts_with("http://") || base.starts_with("https://") {
             Location::Http
+        } else if let Some(r) = crate::registry::open(&base, &params)? {
+            Location::Registry(r)
         } else {
-            return Err(format!("don't know how to open binary cache '{}'; use a file:// or https:// URL", redact_url(url)));
+            return Err(format!(
+                "don't know how to open binary cache '{}'; use a file://, https://, gitlab:// or github:// URL",
+                redact_url(url)
+            ));
         };
-        Ok(BinaryCache { url: base, location, params, http: HttpClient::default(), disk: None, info: OnceLock::new() })
+        let layout = Layout::from_params(&params)?;
+        Ok(BinaryCache { url: base, location, params, layout, http: HttpClient::default(), disk: None, info: OnceLock::new() })
     }
 
     /// Makes HTTP requests with `http`, which carries for example the
@@ -311,6 +322,22 @@ impl BinaryCache {
     pub fn with_http(mut self, http: HttpClient) -> BinaryCache {
         self.http = http;
         self
+    }
+
+    /// Takes the token of a registry cache from `tokens` (Nix's
+    /// `access-tokens`, by host) where its URL names no token file.
+    pub fn with_access_tokens(mut self, tokens: &BTreeMap<String, String>) -> BinaryCache {
+        if let Location::Registry(r) = &mut self.location {
+            let mut t = crate::registry::Tokens::from_params(&self.params).unwrap_or_default();
+            t.or(tokens.get(r.token_host()));
+            r.set_tokens(t);
+        }
+        self
+    }
+
+    /// Whether this cache is a package registry.
+    pub fn is_registry(&self) -> bool {
+        matches!(self.location, Location::Registry(_))
     }
 
     /// Remembers narinfo lookups in `disk`, and answers from it while
@@ -338,8 +365,22 @@ impl BinaryCache {
     fn file_path(&self, rel: &str) -> Option<PathBuf> {
         match &self.location {
             Location::File(d) => Some(d.join(rel)),
-            Location::Http => None,
+            Location::Http | Location::Registry(_) => None,
         }
+    }
+
+    fn registry(&self) -> Option<&dyn Registry> {
+        match &self.location {
+            Location::Registry(r) => Some(r.as_ref()),
+            _ => None,
+        }
+    }
+
+    /// The `nix-cache-info` of a registry, made from the URL parameters.
+    fn registry_cache_info(&self) -> Vec<u8> {
+        let dir = self.param("store-dir").unwrap_or("/nix/store");
+        let prio = self.param("priority").unwrap_or("50");
+        format!("StoreDir: {dir}\nWantMassQuery: 1\nPriority: {prio}\n").into_bytes()
     }
 
     fn http_url(&self, rel: &str) -> String {
@@ -354,6 +395,12 @@ impl BinaryCache {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
                 Err(e) => Err(format!("reading '{}': {e}", p.display())),
             };
+        }
+        if let Some(r) = self.registry() {
+            if rel == "nix-cache-info" {
+                return Ok(Some(self.registry_cache_info()));
+            }
+            return r.get(&self.http, rel);
         }
         let url = self.http_url(rel);
         let resp = self.http.get(&url)?;
@@ -371,12 +418,21 @@ impl BinaryCache {
             let f = fs::File::open(&p).map_err(|e| format!("opening '{}': {e}", p.display()))?;
             return Ok(Box::new(io::BufReader::new(f)));
         }
+        if let Some(r) = self.registry() {
+            if rel == "nix-cache-info" {
+                return Ok(Box::new(io::Cursor::new(self.registry_cache_info())));
+            }
+            return r.open(&self.http, rel);
+        }
         Ok(Box::new(self.http.open(&self.http_url(rel))?))
     }
 
     pub fn file_exists(&self, rel: &str) -> Result<bool> {
         if let Some(p) = self.file_path(rel) {
             return Ok(p.exists());
+        }
+        if let Some(r) = self.registry() {
+            return if rel == "nix-cache-info" { Ok(true) } else { r.exists(&self.http, rel) };
         }
         Ok(self.http.head(&self.http_url(rel))? == 200)
     }
@@ -389,6 +445,9 @@ impl BinaryCache {
             let tmp = dir.join(tmp_name("upload"));
             fs::copy(src, &tmp).map_err(|e| format!("writing '{}': {e}", tmp.display()))?;
             return fs::rename(&tmp, &dest).map_err(|e| format!("writing '{}': {e}", dest.display()));
+        }
+        if let Some(r) = self.registry() {
+            return if rel == "nix-cache-info" { Ok(()) } else { r.put(&self.http, rel, src, content_type) };
         }
         self.http.put_file(&self.http_url(rel), src, content_type)
     }
@@ -563,7 +622,7 @@ impl BinaryCache {
                 return Err(format!("path '{what}' was modified: its contents no longer match the NAR hash in the store"));
             }
             let (file_hash, file_size) = out.sink.finish();
-            let url = format!("nar/{}.nar{}", file_hash.to_nix32(), compression.extension());
+            let url = self.layout.nar_rel(&info.path, &format!("{}.nar{}", file_hash.to_nix32(), compression.extension()));
             if !self.file_exists(&url)? {
                 self.put_file(&url, &tmp, "application/x-nix-nar")?;
             }

@@ -60,8 +60,8 @@ impl Substituters {
         }
         let mut caches = Vec::new();
         for u in &s.substituters {
-            match BinaryCache::open(u) {
-                Ok(c) => caches.push(c.with_http(http_client(s))),
+            match open_cache(u, s) {
+                Ok(c) => caches.push(c),
                 Err(e) => eprintln!("warning: ignoring substituter: {e}"),
             }
         }
@@ -77,6 +77,12 @@ impl Substituters {
     pub fn keys(&self) -> &[PublicKey] {
         &self.keys
     }
+}
+
+/// Opens the cache `url` with the HTTP client and the registry tokens
+/// configured by `s`.
+pub fn open_cache(url: &str, s: &Settings) -> Result<BinaryCache> {
+    Ok(BinaryCache::open(url)?.with_http(http_client(s)).with_access_tokens(&s.fetch.access_tokens))
 }
 
 /// The HTTP client for caches, configured by `s`.
