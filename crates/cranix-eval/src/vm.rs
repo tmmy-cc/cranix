@@ -15,7 +15,7 @@
 //! Constants, local variables and lambdas in lazy positions stay plain
 //! nodes, so they need no thunk.
 
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 use std::rc::Rc;
 
 use smallvec::SmallVec;
@@ -30,7 +30,8 @@ pub enum Op {
     Local { up: u32, idx: u32 },
     /// Evaluates the expression with the tree walker.
     Tree(&'static Expr),
-    Select { path: &'static [Key], default: Option<&'static Expr>, pos: Pos },
+    /// Selects `path`; `hints` are the inline caches of its elements.
+    Select { path: &'static [Key], hints: Box<[Cell<u32>]>, default: Option<&'static Expr>, pos: Pos },
     HasAttr(&'static [Key]),
     Attrs(&'static AttrsDef),
     List(&'static [&'static Expr]),
@@ -166,7 +167,12 @@ impl Builder {
             Expr::WithVar { .. } | Expr::CurPos(_) | Expr::Code(_) => self.ops.push(Op::Tree(e)),
             Expr::Select { e, path, default, pos } => {
                 self.gen(e);
-                self.ops.push(Op::Select { path: lower_keys(path), default: default.map(lower), pos: *pos });
+                self.ops.push(Op::Select {
+                    path: lower_keys(path),
+                    hints: path.iter().map(|_| Cell::new(0)).collect(),
+                    default: default.map(lower),
+                    pos: *pos,
+                });
             }
             Expr::HasAttr { e, path } => {
                 self.gen(e);
@@ -331,9 +337,9 @@ impl Eval {
                 stack.push(self.force(&v)?);
             }
             Op::Tree(e) => stack.push(self.eval(e, env)?),
-            Op::Select { path, default, pos } => {
+            Op::Select { path, hints, default, pos } => {
                 let v = stack.pop().unwrap();
-                stack.push(self.select(v, path, *default, env, *pos)?);
+                stack.push(self.select_hinted(v, path, Some(hints), *default, env, *pos)?);
             }
             Op::HasAttr(path) => {
                 let v = stack.pop().unwrap();
