@@ -86,6 +86,7 @@ impl Store {
         let built = if drv.builder.starts_with("builtin:") {
             match drv.builder.as_str() {
                 "builtin:fetchurl" => self.builtin_fetchurl(&drv, &outputs[0].1, &log),
+                "builtin:buildenv" => crate::buildenv::run(&drv, &self.real_path(&outputs[0].1)),
                 b => Err(format!("unsupported builtin builder '{b}'")),
             }
         } else {
