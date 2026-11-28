@@ -1,4 +1,3 @@
 # Language tests cranix does not pass yet; tests/langtest.py --update-known rewrites this list.
 snix/eval-okay-builtins-replace-strings-propagate-catchable
 snix/eval-okay-identifier-formatting
-snix/eval-okay-observable-eval-cache
