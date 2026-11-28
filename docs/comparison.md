@@ -178,77 +178,108 @@ Nix's single-process, single-machine shape:
   differing line, where Nix reports only that the output is not
   deterministic.
 
-### Measured against Nix 2.24
+### Measured against Nix 2.24 and Snix
 
 Evaluation of `(import <nixpkgs> {}).<attr>.drvPath` on an Apple M-series
-machine (aarch64-darwin), nixpkgs 24.11pre, best of three runs, `.drv` files
-already present in both stores. Both tools print the same path.
+machine (aarch64-darwin), nixpkgs 24.11pre, `.drv` files already present.
+Times are the best of three runs (five for cranix), memory is the peak RSS.
+Nix, Snix and cranix (tree walker and VM) print the same paths for all
+four rows. Snix is `snix-eval` at the revision whose language tests
+`tests/langtest.py` runs, with its default in-memory stores; it reads
+nixpkgs into its content-addressed store first, which is part of its time.
 
-| Attribute | Nix 2.24 time | cranix, cache off | cranix, cold cache | cranix, warm cache | Nix peak RSS | cranix peak RSS |
-|-----------|--------------:|------------------:|-------------------:|-------------------:|-------------:|----------------:|
-| `hello`   | 0.29 s        | 0.28 s            | 0.31 s             | 0.24 s             | 205 MiB      | 151 MiB         |
-| `python3` | 0.29 s        | 0.28 s            | 0.31 s             | 0.25 s             | 206 MiB      | 153 MiB         |
-| `git`     | 0.36 s        | 0.38 s            | 0.42 s             | 0.34 s             | 265 MiB      | 213 MiB         |
-| NixOS `toplevel` | –      | 2.00 s            | 2.18 s             | 1.72 s             | –            | 1137 MiB        |
+| Attribute | Nix 2.24 | Snix | cranix, cache off | cranix, cold cache | cranix, warm cache |
+|-----------|---------:|-----:|------------------:|-------------------:|-------------------:|
+| `hello`   | 0.54 s, 203 MiB | 0.98 s, 534 MiB | 0.31 s, 158 MiB | 0.34 s | 0.28 s, 158 MiB |
+| `python3` | 0.55 s, 205 MiB | 1.00 s, 538 MiB | 0.32 s, 160 MiB | 0.35 s | 0.28 s, 160 MiB |
+| `git`     | 0.72 s, 264 MiB | 1.37 s, 705 MiB | 0.43 s, 221 MiB | 0.46 s | 0.39 s, 220 MiB |
+| NixOS `toplevel` | 3.36 s, 838 MiB | 9.98 s, 2693 MiB | 2.15 s, 1216 MiB | 2.34 s | 1.85 s, 1226 MiB |
 
 The cache columns refer to the on-disk cache of parsed files
 (`CRANIX_AST_CACHE=0` turns it off; a cold run fills it, a warm run reads
 it). The NixOS row evaluates `config.system.build.toplevel.drvPath` of a
 minimal `x86_64-linux` configuration through `<nixpkgs/nixos>`; it reads
-about 2,600 files and fills 26 MB of cache.
+about 2,600 files and fills 27 MB of cache.
 
-cranix (with mimalloc) is on par with or slightly faster than Nix on these
-workloads and uses 15–25% less memory. A sampling profile of the NixOS
-evaluation without the cache puts about 15% of the evaluation thread in the
-parser (10% in the lexer alone), 3% in the compile pass, 11% in the dispatch
-of the tree walker itself, and the rest in builtins, attribute set
-operations, thunks, allocation and derivation hashing. A warm cache removes
-the parsing share, which gives the 10–15% above.
+cranix is 35–40% faster than Nix here and uses 20–25% less memory on
+packages; the NixOS evaluation needs about 45% more memory than Nix, since
+reference counting does not reclaim the cycles that the module system's
+fixpoints create. Snix is 2–3 times slower than Nix and needs 2.5–3 times
+its memory.
 
-cranix also has a bytecode VM beside the tree walker (`CRANIX_EVAL=vm`). It
-compiles each thunk body, lambda body and file on first use into a flat
-chunk of ops on a value stack, reuses the tree walker's operations, and
-records error frames as regions over the ops, so results, errors and traces
-are identical. With a warm parse cache, best of five:
+**Where the time goes.** Sampling profiles (samply at 4 kHz, CPU time of
+all threads, parse cache off), attributed by the innermost cranix function
+of each sample:
+
+| Share of CPU time            | `hello` | `python3` | NixOS | `flake check` | NixOS, VM |
+|------------------------------|--------:|----------:|------:|--------------:|----------:|
+| allocation, copies, freeing  | 38%     | 40%       | 42%   | 43%           | 43%       |
+| system calls (file reads, page faults) | 20% | 15% | 11%  | 11%           | 11%       |
+| derivation hashing           | 10%     | 11%       | 7%    | 9%            | 7%        |
+| parsing                      | 9%      | 9%        | 10%   | 8%            | 9%        |
+| dispatch (walker or VM)      | 8%      | 9%        | 13%   | 12%           | 15%       |
+| attribute set operations     | 7%      | 7%        | 6%    | 6%            | 4%        |
+| thunks and forcing           | 4%      | 5%        | 7%    | 6%            | 6%        |
+| compile pass                 | 3%      | 3%        | 3%    | 3%            | 3%        |
+| builtins, strings            | 1%      | 1%        | 1%    | 1%            | 1%        |
+| building VM chunks           | –       | –         | –     | –             | 0.2%      |
+
+Counting the frames below the parser as well, parsing is 17–19% of every
+workload, which is what the warm cache saves. `flake check` is the check
+of a flake with `hello`, `python3` and `git` as packages, one check and
+one NixOS configuration.
+
+**The bytecode VM.** `CRANIX_EVAL=vm` runs a bytecode VM beside the tree
+walker. It compiles each thunk body, lambda body and file on first use into
+a flat chunk of ops on a value stack, reuses the tree walker's operations,
+and records error frames as regions over the ops, so results, errors and
+traces are identical. Attribute selections carry an inline cache: the
+index at which the key was found last time, tried before searching. It
+hits 58% of lookups for `hello` and 75% for NixOS, but lookups are only a
+few percent of the time, so it gains about 1%. With a warm parse cache:
 
 | Attribute        | Tree walker      | VM               |
 |------------------|-----------------:|-----------------:|
-| `hello`          | 0.24 s, 150 MiB  | 0.25 s, 157 MiB  |
-| `python3`        | 0.24 s, 153 MiB  | 0.25 s, 159 MiB  |
-| `git`            | 0.33 s, 212 MiB  | 0.35 s, 218 MiB  |
-| NixOS `toplevel` | 1.71 s, 1136 MiB | 1.83 s, 1179 MiB |
+| `hello`          | 0.28 s, 158 MiB  | 0.29 s, 166 MiB  |
+| `python3`        | 0.28 s, 160 MiB  | 0.29 s, 169 MiB  |
+| `git`            | 0.39 s, 220 MiB  | 0.40 s, 230 MiB  |
+| NixOS `toplevel` | 1.85 s, 1226 MiB | 2.01 s, 1250 MiB |
+| `flake check`    | 2.23 s, 1384 MiB | 2.34 s, 1418 MiB |
 
-The VM is 4–7% slower and uses 3–4% more memory, so the tree walker is the
-default. The walker's dispatch is a small share of the time to begin with,
-and the VM moves values through its stack where the walker returns them in
-registers, which adds reference-count traffic; forcing, attribute lookups,
-allocation and hashing cost the same in both. A heap profile of `hello`
-peaks at about 140 MB; the largest remaining items are merges of mid-sized
-sets by `//` (30%), thunks including `mapAttrs` results (26%), and the
-compiled syntax trees of the imported files (8%). Most of
-it stays live until exit, because reference counting does not reclaim the
-cycles that fixpoints create. Lix and Snix were not installed on the
-benchmark machine and are not part of this table.
+The VM is 3–9% slower and uses 2–6% more memory, so the tree walker stays
+the default. Dispatch is 8–13% of the time, below the 20% at which a VM
+would pay off, and the VM moves values through its stack where the walker
+returns them in registers, which adds reference-count traffic. Its chunks
+are not cached on disk: building them is 0.2% of the time, and they point
+into the syntax trees that the parse cache already restores. A JIT is not
+planned: the VM's own loop is 7% of the NixOS run, no small set of
+functions dominates, and allocation, system calls and hashing, which a
+JIT would not change, take two thirds of the time.
 
-Flake installables also use the evaluation cache. `eval --raw
-nixpkgs#<attr>.drvPath`, best of three:
+**Flake evaluation cache.** Flake installables and `flake check` cache
+their results per locked flake. `eval --raw nixpkgs#<attr>.drvPath` and
+`flake check --no-build` of the flake above, best of three:
 
-| Attribute | Nix 2.24 | cranix, `--no-eval-cache` | cranix, cached |
-|-----------|---------:|--------------------------:|---------------:|
-| `hello`   | 0.71 s   | 0.29 s                    | 0.004 s        |
-| `python3` | 0.72 s   | 0.30 s                    | 0.003 s        |
-| `git`     | 0.87 s   | 0.39 s                    | 0.004 s        |
+| Command   | Nix 2.24 | cranix, `--no-eval-cache` | cranix, cache hit |
+|-----------|---------:|--------------------------:|------------------:|
+| `hello`   | 0.72 s, 315 MiB | 0.40 s, 228 MiB    | < 5 ms, 5 MiB     |
+| `python3` | 0.74 s, 318 MiB | 0.41 s, 231 MiB    | < 5 ms, 5 MiB     |
+| `git`     | 0.86 s, 378 MiB | 0.52 s, 293 MiB    | < 5 ms, 5 MiB     |
+| `flake check` | 2.68 s, 992 MiB | 2.25 s, 1385 MiB | 0.03 s, 7 MiB  |
 
-Nix's evaluation cache does not cover the final value of `nix eval`, so its
-time is the same with and without `--no-eval-cache`. A cached `cranix build
-nixpkgs#hello` whose output is present takes under 10 ms (0.28 s uncached).
+Nix's evaluation cache does not cover the final value of `nix eval` or
+`nix flake check`, so its times are the same with and without
+`--no-eval-cache`. Unlocked flakes, dirty trees and `--impure` are never
+cached. These changes left the uncached path as it was: with the cache
+off, the tree walker took 0.31, 0.32, 0.43 and 2.18 s with the same peak
+memory before them, and 0.31, 0.32, 0.43 and 2.15 s after.
 
 ### Choosing between them
 
 * Running NixOS or a production fleet: Nix or Lix. They have years of
   production use behind the daemon, sandbox, substituters, flakes and remote
   builders, and cover the rest of the surface (S3 stores, profiles,
-  `nix-env`, the evaluation cache).
+  `nix-env`).
   Pick Lix for its community process and quality focus, Nix for being the
   upstream reference.
 * Building infrastructure out of Nix concepts (remote evaluation, alternative

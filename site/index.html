@@ -213,7 +213,7 @@
                 <div class="section-header reveal">
                     <p class="section-kicker">Features</p>
                     <h2 id="features-title">From the language to the supply chain</h2>
-                    <p>Everything marked available is on the main branch and checked against Nix by its test suites. The items marked planned come next.</p>
+                    <p>Everything marked available is on the main branch and checked against Nix by its test suites.</p>
                 </div>
 
                 <div class="feature-groups">
@@ -295,16 +295,10 @@
                                 <h3>Error messages, TOML and XML</h3>
                                 <p>Errors that point at the source with a hint, readable stack traces, and <code>fromTOML</code> and <code>toXML</code>.</p>
                             </li>
-                        </ul>
-                    </div>
-
-                    <div>
-                        <h3 class="feature-group-title reveal"><span class="status status-planned">Planned</span></h3>
-                        <ul class="features" data-stagger>
-                            <li class="feature feature-planned reveal">
+                            <li class="feature reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M13 3 5 13h6l-1 8 8-10h-6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M13 3 5 13h6z" fill="currentColor" opacity="0.5"/></svg>
                                 <h3>Faster repeated evaluation</h3>
-                                <p>Compiled Nix files and flake evaluation results cached on disk, so evaluating the same package set again skips most of the work.</p>
+                                <p>Parsed Nix files and flake evaluation results cached on disk: a NixOS system evaluates 14% faster on a warm cache, and a repeated <code>eval</code> or <code>flake check</code> of a locked flake takes milliseconds.</p>
                             </li>
                         </ul>
                     </div>
@@ -316,17 +310,18 @@
             <div class="container">
                 <div class="section-header reveal">
                     <p class="section-kicker">Performance</p>
-                    <h2 id="performance-title">As fast as Nix, with less memory</h2>
+                    <h2 id="performance-title">Faster than Nix, with less memory</h2>
                     <p>Evaluating <code>(import &lt;nixpkgs&gt; {}).&lt;attr&gt;.drvPath</code> with both tools. Both print the same path.</p>
                 </div>
                 <div class="table-wrap reveal">
                     <table class="perf-table">
-                        <caption>Apple M-series (aarch64-darwin), nixpkgs 24.11pre, best of three runs, <code>.drv</code> files already in both stores.</caption>
+                        <caption>Apple M-series (aarch64-darwin), nixpkgs 24.11pre, best of three runs (five for cranix), <code>.drv</code> files already in both stores. Snix needs 0.98&#8202;s and 534 MiB for <code>hello</code>.</caption>
                         <thead>
                             <tr>
                                 <th scope="col">Attribute</th>
                                 <th scope="col">Nix 2.24 time</th>
                                 <th scope="col">cranix time</th>
+                                <th scope="col">cranix, cached files</th>
                                 <th scope="col">Nix peak memory</th>
                                 <th scope="col">cranix peak memory</th>
                             </tr>
@@ -334,24 +329,27 @@
                         <tbody>
                             <tr>
                                 <th scope="row"><code>hello</code></th>
-                                <td>0.29&#8202;s<span class="bar" aria-hidden="true"><span style="--value: 81%"></span></span></td>
-                                <td class="ours">0.25&#8202;s<span class="bar bar-ours" aria-hidden="true"><span style="--value: 69%"></span></span></td>
-                                <td>205 MiB<span class="bar" aria-hidden="true"><span style="--value: 77%"></span></span></td>
-                                <td class="ours">157 MiB<span class="bar bar-ours" aria-hidden="true"><span style="--value: 59%"></span></span></td>
+                                <td>0.54&#8202;s<span class="bar" aria-hidden="true"><span style="--value: 75%"></span></span></td>
+                                <td class="ours">0.31&#8202;s<span class="bar bar-ours" aria-hidden="true"><span style="--value: 43%"></span></span></td>
+                                <td class="ours">0.28&#8202;s<span class="bar bar-ours" aria-hidden="true"><span style="--value: 39%"></span></span></td>
+                                <td>203 MiB<span class="bar" aria-hidden="true"><span style="--value: 77%"></span></span></td>
+                                <td class="ours">158 MiB<span class="bar bar-ours" aria-hidden="true"><span style="--value: 60%"></span></span></td>
                             </tr>
                             <tr>
                                 <th scope="row"><code>python3</code></th>
-                                <td>0.29&#8202;s<span class="bar" aria-hidden="true"><span style="--value: 81%"></span></span></td>
-                                <td class="ours">0.26&#8202;s<span class="bar bar-ours" aria-hidden="true"><span style="--value: 72%"></span></span></td>
-                                <td>206 MiB<span class="bar" aria-hidden="true"><span style="--value: 78%"></span></span></td>
-                                <td class="ours">160 MiB<span class="bar bar-ours" aria-hidden="true"><span style="--value: 60%"></span></span></td>
+                                <td>0.55&#8202;s<span class="bar" aria-hidden="true"><span style="--value: 76%"></span></span></td>
+                                <td class="ours">0.32&#8202;s<span class="bar bar-ours" aria-hidden="true"><span style="--value: 44%"></span></span></td>
+                                <td class="ours">0.28&#8202;s<span class="bar bar-ours" aria-hidden="true"><span style="--value: 39%"></span></span></td>
+                                <td>205 MiB<span class="bar" aria-hidden="true"><span style="--value: 78%"></span></span></td>
+                                <td class="ours">160 MiB<span class="bar bar-ours" aria-hidden="true"><span style="--value: 61%"></span></span></td>
                             </tr>
                             <tr>
                                 <th scope="row"><code>git</code></th>
-                                <td>0.36&#8202;s<span class="bar" aria-hidden="true"><span style="--value: 100%"></span></span></td>
-                                <td class="ours">0.35&#8202;s<span class="bar bar-ours" aria-hidden="true"><span style="--value: 97%"></span></span></td>
-                                <td>265 MiB<span class="bar" aria-hidden="true"><span style="--value: 100%"></span></span></td>
-                                <td class="ours">225 MiB<span class="bar bar-ours" aria-hidden="true"><span style="--value: 85%"></span></span></td>
+                                <td>0.72&#8202;s<span class="bar" aria-hidden="true"><span style="--value: 100%"></span></span></td>
+                                <td class="ours">0.43&#8202;s<span class="bar bar-ours" aria-hidden="true"><span style="--value: 60%"></span></span></td>
+                                <td class="ours">0.39&#8202;s<span class="bar bar-ours" aria-hidden="true"><span style="--value: 54%"></span></span></td>
+                                <td>264 MiB<span class="bar" aria-hidden="true"><span style="--value: 100%"></span></span></td>
+                                <td class="ours">221 MiB<span class="bar bar-ours" aria-hidden="true"><span style="--value: 84%"></span></span></td>
                             </tr>
                         </tbody>
                     </table>

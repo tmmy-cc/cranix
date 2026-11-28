@@ -64,8 +64,11 @@ a damaged entry is parsed again. `CRANIX_AST_CACHE=0` turns the cache off.
 lambda body and thunk body is compiled on first use into a chunk of ops on
 a value stack; the ops share the tree walker's operations, and the error
 frames and positions the walker adds around a sub-expression are regions
-over its ops. Results, errors and traces are the same as the tree walker's;
-the VM is 4–7% slower on nixpkgs (see [docs/comparison.md](docs/comparison.md)).
+over its ops. Attribute selections keep an inline cache of the index where
+they last found their key. Results, errors and traces are the same as the
+tree walker's; the VM is 3–9% slower on nixpkgs, and the profile in
+[docs/comparison.md](docs/comparison.md) shows why it is not the default
+and why there is no JIT.
 
 Compiled expressions are leaked to `&'static`, so a thunk is just
 `(&'static Expr, Rc<Env>)`. Values are a 16-byte enum of immediates and `Rc`
@@ -602,7 +605,7 @@ Flake evaluation is pure unless `--impure` is given; the lock flags of Nix
 (`--no-write-lock-file`, `--update-input`, `--override-input`,
 `--override-flake`, `--recreate-lock-file`, `--commit-lock-file`,
 `--refresh`, …) are accepted. `eval`, `build` and `instantiate` of a flake
-installable keep their results (the printed value, or the derivations to
+installable, and a passing `flake check`, keep their results (the printed value, or the derivations to
 build) in an evaluation cache under `$XDG_CACHE_HOME/cranix/eval-cache-v1`,
 one JSON file per flake fingerprint, so a repeated command on the same
 locked flake only locks it; derivations a cached entry names must be valid
@@ -657,7 +660,7 @@ Errors are printed like Nix 2.24: the position with the surrounding source
 lines, a short trace (all frames with `--show-trace`), and hints such as
 close names for a missing attribute or an undefined variable.
 
-Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
+Not implemented: S3 stores, `fetchMercurial`, the
 `git` hashing mode, `unsafeGetAttrPos` (returns
 `null`), and profiles/`nix-env`.
 
