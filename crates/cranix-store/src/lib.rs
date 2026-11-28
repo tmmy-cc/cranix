@@ -19,6 +19,7 @@ pub mod narinfo_cache;
 pub mod realisation;
 pub mod refs;
 pub mod registry;
+pub mod s3;
 pub mod select;
 pub mod substitute;
 pub mod upload;
