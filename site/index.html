@@ -286,6 +286,11 @@
                                 <p>Flakes with lock files, the flake registry, and <code>fetchGit</code>, <code>fetchTarball</code> and <code>fetchTree</code> for Git, GitHub, GitLab and tarballs.</p>
                             </li>
                             <li class="feature reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 6h16M4 12h16M4 18h10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle class="accent" cx="18" cy="18" r="2" fill="currentColor"/></svg>
+                                <h3>Profiles</h3>
+                                <p><code>nix-env</code> and the <code>profile</code> commands, with generations, rollback and upgrades, on profiles that Nix and cranix can take turns on: the same <code>profile-N-link</code> layout, <code>manifest.nix</code> and <code>manifest.json</code>.</p>
+                            </li>
+                            <li class="feature reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4 7 20M17 4l-2 16M4 9h16M3 15h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle class="accent" cx="12" cy="12" r="2" fill="currentColor"/></svg>
                                 <h3>Content-addressed derivations</h3>
                                 <p>Outputs addressed by what they contain, and impure derivations, with realisations recorded in the store and the same paths as Nix.</p>
@@ -394,7 +399,7 @@
                         </div>
                     </li>
                 </ol>
-                <p class="commands reveal">Commands: <code>eval</code>, <code>instantiate</code>, <code>build</code>, <code>run</code>, <code>shell</code>, <code>develop</code>, <code>flake metadata|<wbr>show|<wbr>lock|<wbr>update|<wbr>check|<wbr>init|<wbr>new</code>, <code>copy</code>, <code>provenance</code>, <code>source-archive</code>, <code>daemon</code>, <code>show-derivation</code>, <code>realisation info</code>, <code>hash</code>, <code>key</code>, <code>nar dump|<wbr>restore</code> and <code>store add|<wbr>path-info|<wbr>sign|<wbr>closure|<wbr>ls|<wbr>verify|<wbr>gc|<wbr>serve</code>. Global options include <code>--store</code>, <code>--builders</code>, <code>--option</code>, <code>--show-trace</code>, <code>-I</code>, <code>--arg</code>, <code>--argstr</code>, <code>--system</code> and <code>--pure</code>.</p>
+                <p class="commands reveal">Commands: <code>eval</code>, <code>instantiate</code>, <code>build</code>, <code>run</code>, <code>shell</code>, <code>develop</code>, <code>flake metadata|<wbr>show|<wbr>lock|<wbr>update|<wbr>check|<wbr>init|<wbr>new</code>, <code>copy</code>, <code>nix-env</code>, <code>profile install|<wbr>remove|<wbr>upgrade|<wbr>list|<wbr>rollback|<wbr>history|<wbr>wipe-history</code>, <code>provenance</code>, <code>source-archive</code>, <code>daemon</code>, <code>show-derivation</code>, <code>realisation info</code>, <code>hash</code>, <code>key</code>, <code>nar dump|<wbr>restore</code> and <code>store add|<wbr>path-info|<wbr>sign|<wbr>closure|<wbr>ls|<wbr>verify|<wbr>gc|<wbr>serve</code>. Global options include <code>--store</code>, <code>--builders</code>, <code>--option</code>, <code>--show-trace</code>, <code>-I</code>, <code>--arg</code>, <code>--argstr</code>, <code>--system</code> and <code>--pure</code>.</p>
             </div>
         </section>
 

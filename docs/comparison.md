@@ -37,6 +37,7 @@ benchmark section says otherwise.
 | Daemon protocol        | yes                         | yes, compatible              | partial (via `nix-compat`)             | yes, compatible (server and client, 1.37) |
 | Builder                | goal/worker state machine, sandbox | same, sandbox             | separate build service (OCI / bubblewrap) | thread-pool scheduler, sandbox (macOS `sandbox-exec`, Linux namespaces), remote builders |
 | Substituters / caches  | yes, signed                 | yes                          | yes (serves and consumes NAR/narinfo)  | yes, signed                             |
+| Profiles               | `nix-env`, `nix profile`    | same as Nix                  | no                                     | `nix-env`, `profile`; profiles shared with Nix |
 | Flakes                 | experimental                | experimental                 | no                                     | yes, lock files compatible with Nix     |
 | Configuration          | `nix.conf`, `NIX_CONFIG`, flags | same as Nix              | own options                            | Nix's files and flags, then `cranix.conf` and `CRANIX_CONFIG` |
 | Drop-in for `nix`      | —                           | yes                          | no (toolkit)                           | no (subset CLI)                         |
@@ -278,8 +279,7 @@ memory before them, and 0.31, 0.32, 0.43 and 2.15 s after.
 
 * Running NixOS or a production fleet: Nix or Lix. They have years of
   production use behind the daemon, sandbox, substituters, flakes and remote
-  builders, and cover the rest of the surface (S3 stores, profiles,
-  `nix-env`).
+  builders, and cover the rest of the surface (S3 stores).
   Pick Lix for its community process and quality focus, Nix for being the
   upstream reference.
 * Building infrastructure out of Nix concepts (remote evaluation, alternative

@@ -129,6 +129,7 @@ dependencies = [
  "flate2",
  "libc",
  "mimalloc",
+ "regex",
  "serde_json",
 ]
 
