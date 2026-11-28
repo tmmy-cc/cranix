@@ -143,6 +143,8 @@ fn select(ev: &Eval, v: &Value, path: &[String]) -> R<Option<Value>> {
 
 pub struct Selected {
     pub value: Value,
+    /// The attribute path that was found.
+    pub attr_path: String,
 }
 
 /// Locks and evaluates `spec` (`flakeref#attrpath`), trying Nix's
@@ -184,7 +186,7 @@ pub fn eval_locked(ev: &Eval, cli: &Cli, inst: &Installable, kind: Kind) -> R<Se
     };
     for c in &candidates {
         if let Some(v) = select(ev, &outputs, &parse_attr_path(c))? {
-            return Ok(Selected { value: v });
+            return Ok(Selected { value: v, attr_path: c.clone() });
         }
     }
     let quoted: Vec<String> = candidates.iter().map(|c| format!("'{c}'")).collect();

@@ -26,6 +26,7 @@ mod remote;
 mod flake_cmd;
 mod eval_cache;
 mod nix_env_cmd;
+mod profile_cmd;
 mod profiles;
 
 #[cfg(not(feature = "dhat-heap"))]
@@ -77,6 +78,8 @@ commands:
   nix-env [-p PROFILE] [-f FILE] -i [-A] NAME... | -e NAME... | -u [NAME...] | -q [-a] [-P] [--out-path]
         | --rollback | --list-generations | --switch-generation N | --delete-generations old|Nd|+N|N...
                                                  manage a profile with manifest.nix, as nix-env does
+  profile install|remove|upgrade|list|rollback|history|wipe-history [--profile PATH] ...
+                                                 manage a profile with manifest.json, as nix profile does
   daemon [--stdio] [--socket PATH] [--force-trusted|--force-untrusted]
                                                  serve the store to Nix clients
 
@@ -342,6 +345,7 @@ fn run() -> Result<(), String> {
         }
         "flake" => flake_cmd::cmd_flake(&cli, &args),
         "nix-env" | "env" => nix_env_cmd::cmd_nix_env(&cli, &args),
+        "profile" => profile_cmd::cmd_profile(&cli, &args),
         "run" | "shell" | "develop" => flake_cmd::cmd_run_like(&cli, &cmd, &args),
         c => Err(format!("unknown command '{c}'\n{USAGE}")),
     }
