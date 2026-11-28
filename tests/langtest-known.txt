@@ -1,5 +1,4 @@
 # Language tests cranix does not pass yet; tests/langtest.py --update-known rewrites this list.
-nix/eval-okay-getattrpos-functionargs
 nix/eval-okay-inherit-from
 nix/eval-okay-print
 snix/eval-fail-outer-value-never-pointer-equal

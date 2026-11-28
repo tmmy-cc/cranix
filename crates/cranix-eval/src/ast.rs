@@ -49,6 +49,8 @@ pub enum Binding {
 pub struct Formals {
     pub entries: Vec<(Sym, Option<Ast>)>,
     pub ellipsis: bool,
+    /// Where each argument is named, in the order of `entries`.
+    pub positions: Vec<Pos>,
 }
 
 #[derive(Debug)]

@@ -18,6 +18,8 @@ pub enum Key {
 pub struct FormalsDef {
     pub entries: Box<[(Sym, Option<&'static Expr>)]>,
     pub ellipsis: bool,
+    /// Where each argument is named, sorted by name.
+    pub positions: crate::value::PosTable,
 }
 
 pub struct LambdaDef {
@@ -356,12 +358,13 @@ impl Compiler {
                 let n_slots = names.len();
                 self.push(names);
                 let formals = match formals {
-                    Some(ast::Formals { entries, ellipsis }) => {
+                    Some(ast::Formals { entries, ellipsis, positions }) => {
+                        let positions = pos_table(entries.iter().map(|(k, _)| k.clone()).zip(positions).collect());
                         let entries = entries
                             .into_iter()
                             .map(|(s, d)| Ok((s, d.map(|d| self.expr(d, None)).transpose()?)))
                             .collect::<R<_>>()?;
-                        Some(FormalsDef { entries, ellipsis })
+                        Some(FormalsDef { entries, ellipsis, positions })
                     }
                     None => None,
                 };
