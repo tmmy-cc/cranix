@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://in-toto.io/Statement/v1/schema.json",
+  "title": "in-toto Statement v1",
+  "description": "An in-toto attestation statement, transcribed from https://github.com/in-toto/attestation/blob/main/spec/v1/statement.md and resource_descriptor.md.",
+  "type": "object",
+  "required": ["_type", "subject", "predicateType"],
+  "properties": {
+    "_type": { "const": "https://in-toto.io/Statement/v1" },
+    "subject": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "allOf": [
+          { "$ref": "#/definitions/ResourceDescriptor" },
+          { "required": ["digest"] }
+        ]
+      }
+    },
+    "predicateType": { "type": "string", "format": "uri", "minLength": 1 },
+    "predicate": { "type": "object" }
+  },
+  "definitions": {
+    "DigestSet": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "string", "minLength": 1 },
+      "properties": {
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "sha224": { "type": "string", "pattern": "^[0-9a-f]{56}$" },
+        "sha384": { "type": "string", "pattern": "^[0-9a-f]{96}$" },
+        "sha512": { "type": "string", "pattern": "^[0-9a-f]{128}$" },
+        "sha1": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "md5": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        "gitCommit": { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$" }
+      }
+    },
+    "ResourceDescriptor": {
+      "type": "object",
+      "anyOf": [
+        { "required": ["uri"] },
+        { "required": ["digest"] },
+        { "required": ["content"] }
+      ],
+      "properties": {
+        "name": { "type": "string" },
+        "uri": { "type": "string", "format": "uri-reference", "minLength": 1 },
+        "digest": { "$ref": "#/definitions/DigestSet" },
+        "content": { "type": "string", "contentEncoding": "base64" },
+        "downloadLocation": { "type": "string", "format": "uri-reference" },
+        "mediaType": { "type": "string" },
+        "annotations": { "type": "object" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
