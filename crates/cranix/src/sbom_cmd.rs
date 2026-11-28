@@ -277,3 +277,16 @@ impl Walker<'_> {
         out
     }
 }
+
+/// The `meta` of the packages reachable from `value`, a NixOS
+/// configuration included, by derivation path.
+pub fn package_meta(ev: &Eval, value: &Value) -> HashMap<StorePath, Meta> {
+    let (target, extra) = nixos_parts(ev, value).unwrap_or((value.clone(), Vec::new()));
+    let mut meta = HashMap::new();
+    let mut walker = Walker { ev, meta: &mut meta, seen: BTreeSet::new() };
+    walker.walk(&target, 0);
+    for v in &extra {
+        walker.walk(v, 0);
+    }
+    meta
+}
