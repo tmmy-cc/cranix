@@ -255,6 +255,32 @@ impl Attrs {
         }
     }
 
+    /// [`Attrs::get`] with an inline cache: `hint` is the index at which a
+    /// lookup from the same place found the key last time. Sets built by
+    /// the same expression share their layout, so the guess usually hits
+    /// and skips the search.
+    #[inline]
+    pub fn get_hinted(&self, k: &Sym, hint: &std::cell::Cell<u32>) -> Option<&Value> {
+        let v = match &self.repr {
+            Repr::Flat(v) => v,
+            Repr::Layered { top, .. } => top,
+        };
+        if let Some((s, x)) = v.get(hint.get() as usize) {
+            if s == k {
+                return Some(x);
+            }
+        }
+        let i = if v.len() <= 24 { v.iter().position(|(s, _)| s == k) } else { v.binary_search_by(|(s, _)| s.cmp(k)).ok() };
+        match (i, &self.repr) {
+            (Some(i), _) => {
+                hint.set(i as u32);
+                Some(&v[i].1)
+            }
+            (None, Repr::Layered { base, .. }) => base.get(k),
+            (None, Repr::Flat(_)) => None,
+        }
+    }
+
     pub fn get_str(&self, k: &str) -> Option<&Value> {
         match &self.repr {
             Repr::Flat(v) => find_str(v, k),

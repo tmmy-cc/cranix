@@ -474,11 +474,29 @@ impl Eval {
 
     // ---- operations shared by the tree walker and the VM ----
 
-    pub(crate) fn select(&self, mut v: Value, path: &[Key], default: Option<&'static Expr>, env: &Rc<Env>, pos: Pos) -> R<Value> {
-        for k in path.iter() {
+    pub(crate) fn select(&self, v: Value, path: &[Key], default: Option<&'static Expr>, env: &Rc<Env>, pos: Pos) -> R<Value> {
+        self.select_hinted(v, path, None, default, env, pos)
+    }
+
+    /// [`Eval::select`] with one inline cache per path element.
+    pub(crate) fn select_hinted(
+        &self,
+        mut v: Value,
+        path: &[Key],
+        hints: Option<&[std::cell::Cell<u32>]>,
+        default: Option<&'static Expr>,
+        env: &Rc<Env>,
+        pos: Pos,
+    ) -> R<Value> {
+        for (i, k) in path.iter().enumerate() {
             let k = self.key(k, env)?;
+            let found = match (&v, hints) {
+                (Value::Attrs(a), Some(h)) => a.get_hinted(&k, &h[i]),
+                (Value::Attrs(a), None) => a.get(&k),
+                _ => None,
+            };
             match &v {
-                Value::Attrs(a) => match a.get(&k) {
+                Value::Attrs(a) => match found {
                     Some(x) => {
                         let x = x.clone();
                         // A black hole reached here means the attribute
