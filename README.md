@@ -684,8 +684,8 @@ Errors are printed like Nix 2.24: the position with the surrounding source
 lines, a short trace (all frames with `--show-trace`), and hints such as
 close names for a missing attribute or an undefined variable.
 
-Not implemented: S3 stores, `fetchMercurial`, the
-`git` hashing mode and `unsafeGetAttrPos` (returns
+Not implemented: `fetchMercurial`, the `git`
+hashing mode and `unsafeGetAttrPos` (returns
 `null`).
 
 ## Testing
