@@ -120,6 +120,7 @@ fn lower_lambda(def: &'static LambdaDef) -> &'static LambdaDef {
     let formals = def.formals.as_ref().map(|f| FormalsDef {
         entries: f.entries.iter().map(|(n, d)| (n.clone(), d.map(lower))).collect(),
         ellipsis: f.ellipsis,
+        positions: f.positions,
     });
     leak(LambdaDef { name: def.name.clone(), arg: def.arg.clone(), formals, n_slots: def.n_slots, body: lower(def.body), pos: def.pos })
 }
@@ -178,6 +179,7 @@ impl Builder {
                     rec: def.rec,
                     statics: def.statics.iter().map(|(k, e)| (k.clone(), lower(e))).collect(),
                     dynamics: def.dynamics.iter().map(|(k, v)| (lower(k), lower(v))).collect(),
+                    positions: def.positions,
                 };
                 self.ops.push(Op::Attrs(leak(def)));
             }
