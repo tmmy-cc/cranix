@@ -27,6 +27,16 @@ tokens="read-token-file=$tmp/read&write-token-file=$tmp/write"
 pk=$("$cranix" key convert-secret-to-public < "$tmp/sk")
 top=$("$cranix" eval --raw --expr 'builtins.toFile "top" "${builtins.toFile "leaf" "x"}"')
 
+# A release whose sources go to the registry with source-archive.
+cat > "$tmp/release.nix" <<'NIX'
+derivation {
+  name = "release-1.0"; system = builtins.currentSystem; builder = "/bin/sh";
+  src = builtins.toFile "release-src" "source";
+  args = [ "-c" "/bin/cat $src > $out" ];
+}
+NIX
+src=$("$cranix" eval --raw --expr 'builtins.toFile "release-src" "source"')
+
 paths() { python3 -c 'import json,sys; d=json.load(sys.stdin); d=d.values() if isinstance(d,dict) else d; print(len(list(d)))'; }
 n=0
 for url in "gitlab://$addr/group/project?scheme=http&$tokens" \
@@ -50,5 +60,11 @@ for url in "gitlab://$addr/group/project?scheme=http&$tokens" \
     nixx copy --from "$served" --to "file://$tmp/nix-cache$n" --trusted-public-keys "$pk" "$top"
     [ "$(nixx path-info --store "file://$tmp/nix-cache$n" -r --json "$top" | paths)" = 2 ]
     if grep -q TEST "$tmp/serve$n.log"; then exit 1; fi
+
+    "$cranix" source-archive "$tmp/release.nix" --drvs --to "$url" 2> "$tmp/archive$n.log"
+    grep -q 'archived 0 fetched and 1 local sources and 1 derivations' "$tmp/archive$n.log"
+    if grep -q TEST "$tmp/archive$n.log"; then exit 1; fi
+    XDG_DATA_HOME=$tmp/src$n "$cranix" copy --from "$url" "$src"
+    [ -f "$tmp/src$n/cranix$src" ]
 done
 echo "registry caches: ok"
