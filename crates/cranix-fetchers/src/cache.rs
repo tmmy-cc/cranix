@@ -1,6 +1,8 @@
-//! The fetcher cache: `(domain, key) -> (value, timestamp)` entries in the
-//! store's state directory, with `tarball-ttl` expiry, mirroring Nix's
-//! `fetcher-cache` database.
+//! The fetcher cache: `(domain, key) -> (value, timestamp)` entries under
+//! `$XDG_CACHE_HOME/cranix/fetcher-cache-v1` (or `~/.cache/cranix/...`), with
+//! `tarball-ttl` expiry, mirroring Nix's `fetcher-cache` database. Entries
+//! that name a store path carry the store directory in their key. Without a
+//! cache directory it falls back to the store's state directory.
 
 use std::path::PathBuf;
 
@@ -11,9 +13,20 @@ use serde_json::json;
 
 use crate::attrs::{self, Attr, Attrs};
 
+fn cache_dir(store: &Store) -> PathBuf {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").filter(|v| !v.is_empty()).map(|h| PathBuf::from(h).join(".cache")));
+    match base {
+        Some(b) => b.join("cranix").join("fetcher-cache-v1"),
+        None => store.state_dir().join("fetcher-cache"),
+    }
+}
+
 fn entry_file(store: &Store, domain: &str, key: &Attrs) -> PathBuf {
     let k = format!("{domain}\0{}", attrs::to_json_string(key));
-    store.state_dir().join("fetcher-cache").join(Hash::sha256(k.as_bytes()).to_nix32())
+    cache_dir(store).join(Hash::sha256(k.as_bytes()).to_nix32())
 }
 
 pub fn upsert(store: &Store, domain: &str, key: &Attrs, value: &Attrs) {
