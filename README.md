@@ -588,7 +588,10 @@ filters of `copy`),
 `copy --from URL` for `file://`, `http(s)://`, `s3://`, `gitlab://` and `github://`
 caches (uploads with `PUT`; filters, `--dry-run` and `--to-nars`), `cache serve`, and
 `key generate-secret|convert-secret-to-public`, `config show [NAME]`, and
-`daemon` (`--stdio`, `--socket`, `--force-trusted`, `--force-untrusted`).
+`daemon` (`--stdio`, `--socket`, `--force-trusted`, `--force-untrusted`),
+`nix-env` (`-i`, `-e`, `-u`, `-q`, `--set-flag`, `--rollback`,
+`--switch-generation`, `--list-generations`, `--delete-generations`) and
+`profile install|remove|upgrade|list|rollback|history|wipe-history`.
 Global options: `--store`, `-I`, `--arg`, `--argstr`, `--pure`,
 `--show-trace`, `--option NAME VALUE` and the flags of every setting, such
 as `--system`, `--builders`, `--sandbox`/`--no-sandbox`, `--timeout`,
@@ -621,6 +624,26 @@ make building possible.
 ```bash
 target/release/cranix eval nixpkgs#hello.drvPath
 target/release/cranix flake lock && target/release/cranix flake metadata
+```
+
+Profiles have Nix's layout: the profile is a symlink to `profile-N-link`
+(relative, in the same directory), and each generation link points at a
+user environment in the store and is registered as an indirect GC root.
+`nix-env` keeps the packages in the environment's `manifest.nix`, the
+`profile` commands in a version 3 `manifest.json` (versions 1 and 2 and
+`nix-env` profiles are read as well), so Nix and cranix can take turns on
+the same profile. Environments are built by the `builtin:buildenv` builder
+from a derivation, with Nix's priorities, collision errors and
+`propagated-user-env-packages`. `-p PROFILE` and `--profile PATH` name the
+profile; the default is `profiles/profile` in the store's state directory.
+`profile install` takes flake installables (their source is recorded for
+`profile upgrade`), store paths and `-f FILE ATTR` or `--expr E ATTR`;
+`nix-env -i` takes names, attribute paths with `-A`, and store paths, from
+the expression given with `-f` (default `<nixpkgs>`).
+
+```bash
+target/release/cranix --store ~/oxstore nix-env -p /tmp/p/env -f tests/profiles.nix -iA hello
+target/release/cranix --store ~/oxstore profile install --profile /tmp/p/new nixpkgs#hello
 ```
 
 macOS has no shell in the sandbox unless one is listed:
@@ -662,8 +685,8 @@ lines, a short trace (all frames with `--show-trace`), and hints such as
 close names for a missing attribute or an undefined variable.
 
 Not implemented: S3 stores, `fetchMercurial`, the
-`git` hashing mode, `unsafeGetAttrPos` (returns
-`null`), and profiles/`nix-env`.
+`git` hashing mode and `unsafeGetAttrPos` (returns
+`null`).
 
 ## Testing
 
@@ -704,6 +727,13 @@ Not implemented: S3 stores, `fetchMercurial`, the
   flake outputs, `getFlake` and `flake metadata --json`; and
   `nixpkgs#hello.drvPath`. `--network` adds remote Git and GitHub inputs.
   The unit tests round-trip a `flake.lock` written by Nix.
+* `tests/profiles.py` has Nix and cranix take turns on the same profiles,
+  with real Nix using the store through `cranix daemon`: `nix-env` and
+  `nix profile` read and change profiles made by `cranix nix-env` and
+  `cranix profile` and the other way round, and the packages, store paths,
+  generations, rollbacks, upgrades, `profile list` output and history
+  agree. Unit tests cover `builtin:buildenv` collisions and priorities,
+  generation links and version ordering.
 * `tests/build.nix` exercises the builder: parallel leaves, references,
   `passAsFile`, multiple outputs and a fixed-output derivation.
 * `tests/langtest.py` runs the language tests of Nix 2.24.10
