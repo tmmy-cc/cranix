@@ -1,7 +1,7 @@
 //! Source bundles of a release: every source a build graph is made from
 //! (downloads of fixed-output derivations and local source paths),
-//! together with the derivations that name them, written as a binary
-//! cache with an index, so that the release rebuilds without network
+//! together with the derivations that name them, and an index of them
+//! for a binary cache, so that the release rebuilds without network
 //! access.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -52,8 +52,11 @@ pub struct Entry {
     pub licenses: Vec<License>,
     /// The derivations that take the source as an input.
     pub used_by: BTreeSet<StorePath>,
-    /// Whether the path is in the store, and so goes into the bundle.
+    /// Whether the path is in the store.
     pub available: bool,
+    /// Why the path is not in the bundle: it could not be fetched, or a
+    /// filter left it out.
+    pub reason: Option<String>,
 }
 
 /// Loads the build graph of `drvs`.
@@ -82,6 +85,28 @@ pub fn missing_fetches(store: &Store, graph: &BTreeMap<StorePath, Derivation>) -
         .collect()
 }
 
+/// What stands in the way of building the fixed-output derivation `d`
+/// without building anything else: `Ok(())` when all its inputs are in
+/// the store, `Err(Some(input))` for a missing input that is a
+/// fixed-output derivation itself (to be fetched first), and `Err(None)`
+/// with a message when a missing input would have to be built.
+pub fn blocker(store: &Store, graph: &BTreeMap<StorePath, Derivation>, d: &StorePath) -> Result<(), Result<StorePath, String>> {
+    let drv = &graph[d];
+    for (i, outs) in &drv.input_drvs {
+        let Some(idrv) = graph.get(i) else { continue };
+        let present = outs.iter().all(|o| idrv.outputs.get(o).and_then(|x| x.path.as_ref()).is_some_and(|p| store.is_valid(p)));
+        if present {
+            continue;
+        }
+        return Err(if idrv.is_fixed_output() {
+            Ok(i.clone())
+        } else {
+            Err(format!("fetching it needs '{}', which is not fixed-output and is not built", store.dir.print(i)))
+        });
+    }
+    Ok(())
+}
+
 /// Lists the sources and derivations of `graph`, sorted by path.
 /// `meta` gives the licences of packages; a source carries those of the
 /// derivations that use it.
@@ -98,6 +123,7 @@ pub fn collect(store: &Store, graph: &BTreeMap<StorePath, Derivation>, meta: &Ha
             licenses: Vec::new(),
             used_by: BTreeSet::new(),
             available: store.is_valid(p),
+            reason: None,
         };
         entries.entry(d.clone()).or_insert_with(|| entry(d, Kind::Derivation)).licenses.extend(licenses_of(d));
         if drv.is_fixed_output() {
@@ -177,6 +203,9 @@ pub fn index(store: &Store, entries: &[Entry]) -> Value {
                     .collect();
                 o.insert("licenses".into(), Value::Array(l));
             }
+            if let Some(r) = &e.reason {
+                o.insert("reason".into(), json!(r));
+            }
             if !e.used_by.is_empty() {
                 o.insert("usedBy".into(), json!(e.used_by.iter().map(p).collect::<Vec<_>>()));
             }
@@ -184,32 +213,19 @@ pub fn index(store: &Store, entries: &[Entry]) -> Value {
         })
         .collect();
     let missing = entries.iter().filter(|e| !e.available).count();
+    let excluded = entries.iter().filter(|e| e.available && e.reason.is_some()).count();
     json!({
         "storeDir": store.dir.as_str(),
         "sources": sources,
         "missing": missing,
+        "excluded": excluded,
     })
 }
 
-/// Copies the available entries and the closure of their references
-/// into `cache`, then writes the index. Returns the number of paths
-/// copied.
-pub fn write_cache(store: &Store, entries: &[Entry], cache: &BinaryCache) -> Result<usize, String> {
-    cache.init_for_writing(&store.dir)?;
-    let roots: Vec<StorePath> = entries.iter().filter(|e| e.available).map(|e| e.path.clone()).collect();
-    let closure = store.closure(roots)?;
-    let mut copied = 0;
-    for p in store.topo_sort(&closure)? {
-        if cache.file_exists(&format!("{}.narinfo", p.hash_part()))? {
-            continue;
-        }
-        let info = store.query_info(&p)?.ok_or_else(|| format!("path '{}' is not valid", store.dir.print(&p)))?;
-        cache.add_path(&store.dir, &store.real_path(&p), &info, &store.query_sigs(&p)?, &[])?;
-        copied += 1;
-    }
+/// Writes the index of `entries` into `cache`.
+pub fn write_index(store: &Store, entries: &[Entry], cache: &BinaryCache) -> Result<(), String> {
     let text = serde_json::to_string_pretty(&index(store, entries)).unwrap() + "\n";
-    cache.put_bytes(INDEX, text.as_bytes(), "application/json")?;
-    Ok(copied)
+    cache.put_bytes(INDEX, text.as_bytes(), "application/json")
 }
 
 /// Writes the files below `dir` as a gzip-compressed ustar archive,
@@ -316,6 +332,7 @@ mod tests {
         assert!(!fetched.available);
         assert_eq!(fetched.licenses, [License::Id("MIT".into())]);
         assert_eq!(missing_fetches(&s, &g), [fetch_path.clone()]);
+        assert_eq!(blocker(&s, &g, &fetch_path), Ok(()));
         let l = entries.iter().find(|e| e.path == local).unwrap();
         assert_eq!((l.kind, l.available), (Kind::Local, true));
         assert_eq!(entries.iter().filter(|e| e.kind == Kind::Derivation).count(), 2);
