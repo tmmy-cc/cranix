@@ -57,7 +57,7 @@ commands:
   copy --to URL PATH... | copy --from URL PATH...   copy closures to or from a binary cache
         [--to-nars DIR] [--dry-run] [--type TYPES] [--exclude-host GLOB] [--exclude-name GLOB]
         [--exclude-class system|test] [--exclude-local]   choose what is copied
-  cache serve [--listen ADDR:PORT] URL           serve a binary cache (e.g. gitlab://, github://) over HTTP
+  cache serve [--listen ADDR:PORT] URL           serve a binary cache (e.g. s3://, gitlab://) over HTTP
   sbom [FILE | --expr E | INSTALLABLE] [-A ATTR] [--format cyclonedx|spdx] [-o FILE]
         [--build-time] [--scan-binaries] [--scan-sources] [--merge DOC]   SBOM of a package or NixOS system
   sbom lock Cargo.lock|package-lock.json        SBOM of a lock file
@@ -95,7 +95,7 @@ global options:
                     (/etc/nix), ~/.config/nix/nix.conf ($XDG_CONFIG_HOME,
                     $NIX_USER_CONF_FILES), ~/.config/cranix/cranix.conf,
                     $CRANIX_CONFIG, $NIX_CONFIG and then the command line
-  --store URL       for 'store path-info', read a binary cache (file://, https://,
+  --store URL       for 'store path-info', read a binary cache (file://, https://, s3://BUCKET,
                     gitlab://HOST/GROUP/PROJECT or github://OWNER/REPO)
 
 flake options (eval, build, run, shell, develop, flake):
