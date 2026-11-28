@@ -2,7 +2,7 @@
 //! one `<hash>.narinfo` per store path and compressed NARs under `nar/`.
 //! `file://` caches are directories; `http(s)://` caches are accessed
 //! through an [`HttpClient`], which also uploads to caches that accept
-//! `PUT`. A [`NarinfoCache`] can remember lookups between runs.
+//! `PUT`, `s3://` caches through [`crate::s3`]. A [`NarinfoCache`] can remember lookups between runs.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -266,6 +266,7 @@ enum Location {
     File(PathBuf),
     Http,
     Registry(Box<dyn Registry>),
+    S3(Box<crate::s3::S3>),
 }
 
 pub struct BinaryCache {
@@ -287,7 +288,7 @@ fn tmp_name(what: &str) -> String {
 }
 
 impl BinaryCache {
-    /// Opens `file:///dir`, `http(s)://host/path`, `gitlab://host/group/project`
+    /// Opens `file:///dir`, `http(s)://host/path`, `s3://bucket`, `gitlab://host/group/project`
     /// or `github://owner/repo`, with optional
     /// `?compression=…&secret-key=…&priority=…` parameters.
     pub fn open(url: &str) -> Result<BinaryCache> {
@@ -305,11 +306,13 @@ impl BinaryCache {
             Location::File(PathBuf::from(p))
         } else if base.starts_with("http://") || base.starts_with("https://") {
             Location::Http
+        } else if base.starts_with("s3://") {
+            Location::S3(Box::new(crate::s3::S3::open(&base, &params)?))
         } else if let Some(r) = crate::registry::open(&base, &params)? {
             Location::Registry(r)
         } else {
             return Err(format!(
-                "don't know how to open binary cache '{}'; use a file://, https://, gitlab:// or github:// URL",
+                "don't know how to open binary cache '{}'; use a file://, https://, s3://, gitlab:// or github:// URL",
                 redact_url(url)
             ));
         };
@@ -365,7 +368,7 @@ impl BinaryCache {
     fn file_path(&self, rel: &str) -> Option<PathBuf> {
         match &self.location {
             Location::File(d) => Some(d.join(rel)),
-            Location::Http | Location::Registry(_) => None,
+            _ => None,
         }
     }
 
@@ -377,6 +380,13 @@ impl BinaryCache {
     }
 
     /// The `nix-cache-info` of a registry, made from the URL parameters.
+    fn s3(&self) -> Option<&crate::s3::S3> {
+        match &self.location {
+            Location::S3(s) => Some(s),
+            _ => None,
+        }
+    }
+
     fn registry_cache_info(&self) -> Vec<u8> {
         let dir = self.param("store-dir").unwrap_or("/nix/store");
         let prio = self.param("priority").unwrap_or("50");
@@ -402,6 +412,10 @@ impl BinaryCache {
             }
             return r.get(&self.http, rel);
         }
+        if let Some(s) = self.s3() {
+            crate::registry::validate_rel(rel)?;
+            return s.get(&self.http, rel);
+        }
         let url = self.http_url(rel);
         let resp = self.http.get(&url)?;
         match resp.status {
@@ -424,6 +438,10 @@ impl BinaryCache {
             }
             return r.open(&self.http, rel);
         }
+        if let Some(s) = self.s3() {
+            crate::registry::validate_rel(rel)?;
+            return s.open_file(&self.http, rel);
+        }
         Ok(Box::new(self.http.open(&self.http_url(rel))?))
     }
 
@@ -433,6 +451,10 @@ impl BinaryCache {
         }
         if let Some(r) = self.registry() {
             return if rel == "nix-cache-info" { Ok(true) } else { r.exists(&self.http, rel) };
+        }
+        if let Some(s) = self.s3() {
+            crate::registry::validate_rel(rel)?;
+            return s.exists(&self.http, rel);
         }
         Ok(self.http.head(&self.http_url(rel))? == 200)
     }
@@ -448,6 +470,10 @@ impl BinaryCache {
         }
         if let Some(r) = self.registry() {
             return if rel == "nix-cache-info" { Ok(()) } else { r.put(&self.http, rel, src, content_type) };
+        }
+        if let Some(s) = self.s3() {
+            crate::registry::validate_rel(rel)?;
+            return s.put(&self.http, rel, src, content_type);
         }
         self.http.put_file(&self.http_url(rel), src, content_type)
     }

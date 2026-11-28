@@ -194,6 +194,7 @@ dependencies = [
  "libc",
  "lzma-sys",
  "serde_json",
+ "sha2",
  "xz2",
  "zstd",
 ]
