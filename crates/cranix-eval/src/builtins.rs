@@ -51,6 +51,24 @@ pub static PRIMOPS: &[PrimOp] = &[
             e
         })
     }),
+    prim!("addDrvOutputDependencies", 1, |ev, a| {
+        let s = ev.force_str(&a[0])?;
+        let elems: Vec<&CtxElem> = s.ctx.iter().collect();
+        let [elem] = elems.as_slice() else {
+            return err(format!("context of string '{}' must have exactly one element, but has {}", s.s, elems.len()));
+        };
+        let deep = match elem {
+            CtxElem::Opaque(p) if p.ends_with(".drv") => CtxElem::DrvDeep(p.clone()),
+            CtxElem::Opaque(p) => return err(format!("path '{p}' is not a derivation")),
+            CtxElem::DrvDeep(p) => CtxElem::DrvDeep(p.clone()),
+            CtxElem::Built { drv, output } => {
+                return err(format!(
+                    "`addDrvOutputDependencies` can only act on derivations, not on a derivation output such as '{output}' of '{drv}'"
+                ))
+            }
+        };
+        Ok(Value::str_ctx(s.s.clone(), [deep].into_iter().collect()))
+    }),
     prim!("all", 2, |ev, a| {
         let f = ev.force_fn(&a[0])?;
         for x in ev.force_list(&a[1])?.iter() {

@@ -1,5 +1,4 @@
 # Language tests cranix does not pass yet; tests/langtest.py --update-known rewrites this list.
-nix/eval-okay-context-introspection
 nix/eval-okay-fromTOML-timestamps
 nix/eval-okay-getattrpos-functionargs
 nix/eval-okay-inherit-from
