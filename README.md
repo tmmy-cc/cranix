@@ -31,13 +31,13 @@ bootstrap graph hashes identically.
 
 | Crate          | Lines | Contents |
 |----------------|------:|----------|
-| `cranix-core`   | 2.0k  | Hashes (md5/sha1/sha256/sha512), nix-base32, SRI, store paths and their fingerprints, streaming NAR writer/reader, derivations (ATerm, `hashDerivationModulo`, input-addressed, fixed-output, floating and impure outputs), narinfo and ed25519 signatures |
+| `cranix-core`   | 1.5k  | Hashes (md5/sha1/sha256/sha512), nix-base32, SRI, store paths and their fingerprints, streaming NAR writer/reader, derivations (ATerm, `hashDerivationModulo`, input-addressed, fixed-output, floating and impure outputs), narinfo and ed25519 signatures |
 | `cranix-store`  | 7.4k  | Local store, path metadata, `add_text`/`add_path`, reference scanning, closures, GC roots and collection, verification, parallel builder, build sandbox, realisations of content-addressed outputs, binary caches (files, HTTP, S3, GitLab and GitHub registries) and substitution, settings |
-| `cranix-eval`   | 7.8k  | Lexer/parser, scope-resolving compiler, lazy evaluator, ~120 builtins including `fromTOML` and `toXML`, `derivationStrict`, printing, JSON, error rendering with source snippets and traces |
-| `cranix-daemon` | 3.8k  | Nix worker protocol (up to 1.37) and serve protocol (2.7): `cranix daemon`, `cranix store serve`, clients for `unix://`, `ssh-ng://` and `ssh://` stores, remote builders |
-| `cranix-fetchers` | 3.0k | Fetchers for files, tarballs, paths, Git and GitHub/GitLab/SourceHut, the fetcher cache, flake registries |
-| `cranix-sbom`   | 1.9k  | CycloneDX and SPDX SBOMs of closures and lock files, Go and Rust binary metadata, SLSA provenance statements and DSSE signatures, release source bundles |
-| `cranix`        | 2.4k  | CLI, flake commands and installables |
+| `cranix-eval`   | 8.7k  | Lexer/parser, scope-resolving compiler, lazy evaluator, ~120 builtins including `fromTOML` and `toXML`, `derivationStrict`, printing, JSON, error rendering with source snippets and traces |
+| `cranix-daemon` | 3.6k  | Nix worker protocol (up to 1.37) and serve protocol (2.7): `cranix daemon`, `cranix store serve`, clients for `unix://`, `ssh-ng://` and `ssh://` stores, remote builders |
+| `cranix-fetchers` | 2.7k | Fetchers for files, tarballs, paths, Git and GitHub/GitLab/SourceHut, the fetcher cache, flake registries |
+| `cranix-sbom`   | 2.4k  | CycloneDX and SPDX SBOMs of closures and lock files, Go and Rust binary metadata, SLSA provenance statements and DSSE signatures, release source bundles |
+| `cranix`        | 3.6k  | CLI, flake commands and installables |
 
 The core crate has no knowledge of the evaluator or the file system layout of
 a store, so it can be reused by tools that only need hashing, NAR or
