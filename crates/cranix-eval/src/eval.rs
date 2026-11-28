@@ -1082,14 +1082,16 @@ impl Eval {
         }
     }
 
-    /// Equality of two values that sit in lists, sets or `elem`: the same
-    /// value in memory (one thunk, one function, one set or list) is equal
-    /// to itself without being forced, as in Nix.
+    /// Equality of two values that sit in lists, sets or `elem`: once
+    /// forced, the same value in memory (one function, set or list) is equal
+    /// to itself without comparing its contents, as in Nix.
     pub fn eq_member(&self, a: &Value, b: &Value) -> R<bool> {
-        if same_value(a, b) {
+        let a = self.force(a)?;
+        let b = self.force(b)?;
+        if same_value(&a, &b) {
             return Ok(true);
         }
-        self.eq(a, b)
+        self.eq(&a, &b)
     }
 
     pub fn eq(&self, a: &Value, b: &Value) -> R<bool> {
@@ -1102,10 +1104,9 @@ impl Eval {
             (Value::Null, Value::Null) => true,
             (Value::Str(x), Value::Str(y)) => x.s == y.s,
             (Value::Path(x), Value::Path(y)) => x == y,
+            // Two operands are compared by content even when they are one
+            // value; only members compare by identity, as in Nix.
             (Value::List(x), Value::List(y)) => {
-                if Rc::ptr_eq(x, y) {
-                    return Ok(true);
-                }
                 if x.len() != y.len() {
                     return Ok(false);
                 }
@@ -1117,9 +1118,6 @@ impl Eval {
                 true
             }
             (Value::Attrs(x), Value::Attrs(y)) => {
-                if Rc::ptr_eq(x, y) {
-                    return Ok(true);
-                }
                 if self.is_derivation(x)? && self.is_derivation(y)? {
                     if let (Some(p), Some(q)) = (x.get(&self.syms.out_path), y.get(&self.syms.out_path)) {
                         return self.eq(p, q);
