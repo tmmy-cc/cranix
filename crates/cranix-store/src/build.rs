@@ -91,7 +91,7 @@ pub struct BuildLog {
 }
 
 impl BuildLog {
-    fn start(opts: &BuildOptions, drv_path: &str, name: &str, text: &str) -> BuildLog {
+    pub(crate) fn start(opts: &BuildOptions, drv_path: &str, name: &str, text: &str) -> BuildLog {
         static NEXT: AtomicUsize = AtomicUsize::new(1);
         let id = NEXT.fetch_add(1, Ordering::Relaxed) as u64;
         match &opts.logger {
@@ -119,7 +119,7 @@ impl BuildLog {
     }
 }
 
-struct Activity<'a>(&'a BuildLog);
+pub(crate) struct Activity<'a>(pub(crate) &'a BuildLog);
 
 impl Drop for Activity<'_> {
     fn drop(&mut self) {
@@ -610,21 +610,7 @@ impl Store {
             return Err(self.cannot_build());
         }
 
-        // The inputs' closure: what a sandboxed builder can see, and what
-        // outputs may refer to besides each other.
-        let mut inputs: BTreeSet<StorePath> = drv.input_srcs.clone();
-        for (d, outs) in &drv.input_drvs {
-            let dd = match all.get(d) {
-                Some(dd) => dd.clone(),
-                None => self.read_derivation(d)?,
-            };
-            for o in outs {
-                if let Some(p) = dd.outputs.get(o).and_then(|x| x.path.clone()) {
-                    inputs.insert(p);
-                }
-            }
-        }
-        let inputs = self.closure(inputs)?;
+        let inputs = self.input_closure(drv, all)?;
         let rewrites: BTreeMap<String, String> =
             outputs.iter().map(|(n, p)| (hash_placeholder(n), self.dir.print(p))).collect();
 
@@ -662,6 +648,24 @@ impl Store {
             }
         }
         Ok(result)
+    }
+
+    /// The closure of a derivation's inputs: what a sandboxed builder can
+    /// see, and what outputs may refer to besides each other.
+    pub(crate) fn input_closure(&self, drv: &Derivation, all: &HashMap<StorePath, Derivation>) -> Result<BTreeSet<StorePath>> {
+        let mut inputs: BTreeSet<StorePath> = drv.input_srcs.clone();
+        for (d, outs) in &drv.input_drvs {
+            let dd = match all.get(d) {
+                Some(dd) => dd.clone(),
+                None => self.read_derivation(d)?,
+            };
+            for o in outs {
+                if let Some(p) = dd.outputs.get(o).and_then(|x| x.path.clone()) {
+                    inputs.insert(p);
+                }
+            }
+        }
+        self.closure(inputs)
     }
 
     fn register_input_addressed(
@@ -712,7 +716,7 @@ impl Store {
         Ok(outputs.iter().map(|(n, p)| ((*n).clone(), p.clone())).collect())
     }
 
-    fn run_builder(
+    pub(crate) fn run_builder(
         &self,
         drv_path: &StorePath,
         drv: &Derivation,
@@ -921,7 +925,7 @@ impl Store {
         sb.collect_outputs(self, outputs)
     }
 
-    fn builtin_fetchurl(&self, drv: &Derivation, out: &StorePath, log: &BuildLog) -> Result<()> {
+    pub(crate) fn builtin_fetchurl(&self, drv: &Derivation, out: &StorePath, log: &BuildLog) -> Result<()> {
         let url = drv.env.get("url").ok_or("builtin:fetchurl requires 'url'")?;
         let real = self.real_path(out);
         // With `unpack`, the download is a (possibly compressed) NAR that is

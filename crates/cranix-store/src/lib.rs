@@ -8,6 +8,7 @@
 
 pub mod binary_cache;
 pub mod build;
+pub mod check;
 mod ca;
 pub mod settings;
 mod fsutil;
