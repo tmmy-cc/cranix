@@ -32,7 +32,7 @@ bootstrap graph hashes identically.
 | Crate          | Lines | Contents |
 |----------------|------:|----------|
 | `cranix-core`   | 2.0k  | Hashes (md5/sha1/sha256/sha512), nix-base32, SRI, store paths and their fingerprints, streaming NAR writer/reader, derivations (ATerm, `hashDerivationModulo`, input-addressed, fixed-output, floating and impure outputs), narinfo and ed25519 signatures |
-| `cranix-store`  | 5.8k  | Local store, path metadata, `add_text`/`add_path`, reference scanning, closures, GC roots and collection, verification, parallel builder, build sandbox, realisations of content-addressed outputs, binary caches (files, HTTP, GitLab and GitHub registries) and substitution, settings |
+| `cranix-store`  | 5.8k  | Local store, path metadata, `add_text`/`add_path`, reference scanning, closures, GC roots and collection, verification, parallel builder, build sandbox, realisations of content-addressed outputs, binary caches (files, HTTP, S3, GitLab and GitHub registries) and substitution, settings |
 | `cranix-eval`   | 7.8k  | Lexer/parser, scope-resolving compiler, lazy evaluator, ~120 builtins including `fromTOML` and `toXML`, `derivationStrict`, printing, JSON, error rendering with source snippets and traces |
 | `cranix-daemon` | 3.8k  | Nix worker protocol (up to 1.37) and serve protocol (2.7): `cranix daemon`, `cranix store serve`, clients for `unix://`, `ssh-ng://` and `ssh://` stores, remote builders |
 | `cranix-fetchers` | 3.0k | Fetchers for files, tarballs, paths, Git and GitHub/GitLab/SourceHut, the fetcher cache, flake registries |
@@ -256,6 +256,34 @@ files of any cache URL cranix opens, so that Nix and other HTTP clients read
 a registry cache. It prints its URL (`http://127.0.0.1:5000` by default)
 and streams NARs as they arrive.
 
+**S3 caches.** `s3://BUCKET[/PREFIX]` keeps a binary cache in an S3 bucket
+or an S3 compatible object store, in the layout Nix uses, so Nix reads and
+writes the same bucket. Requests are signed with AWS signature version 4.
+Credentials come from `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and
+`AWS_SESSION_TOKEN`, else from the profile named by `profile` (or
+`AWS_PROFILE`, or `default`) in `~/.aws/credentials` and `~/.aws/config`,
+else from the container credentials endpoint or the instance role of an
+EC2 instance; without any, requests go unsigned and read public buckets.
+The parameters are Nix's:
+
+* `region` (default `us-east-1`), `profile`, `scheme` (`https` or `http`);
+* `endpoint=HOST[:PORT]` (or a URL) for an S3 compatible service, which is
+  addressed by path (`ENDPOINT/BUCKET/KEY`); AWS buckets are addressed as
+  `BUCKET.s3.REGION.amazonaws.com`, and `addressing-style=path|virtual`
+  overrides either;
+* `compression`, `secret-key`, `priority` and `trusted`, as for every cache;
+* `multipart-threshold` (default 64 MiB): larger files go up as multipart
+  uploads in parts of `buffer-size` bytes (default 16 MiB, at least 5 MiB).
+
+```sh
+cranix copy --to 's3://my-cache?region=eu-central-1&secret-key=/path/to/key' ./result
+cranix build --upload-to 's3://cache?endpoint=minio.example.org:9000&scheme=http' .#hello
+cranix --option substituters 's3://my-cache?region=eu-central-1' build .#hello
+```
+
+Keys and session tokens go to curl on its standard input and never appear
+in messages, which show cache URLs with their secrets redacted.
+
 **SBOMs.** `cranix sbom INSTALLABLE` (or a file, `--expr`, `-A`) writes a
 software bill of materials as CycloneDX 1.6 JSON, or SPDX 2.3 JSON with
 `--format spdx`, to standard output or `-o FILE`. It builds or substitutes
@@ -413,7 +441,7 @@ cranix source-archive .#app --drvs --to gitlab://group/project
 * The bundle is a binary cache: `-o DIR` writes it to a directory,
   `--tarball FILE` to a gzip-compressed tar archive (the same bytes on every
   run), and `--to URL` to any cache that `copy --to` takes (`file://`,
-  `gitlab://`, `github://`, HTTP), signed with the keys of
+  `s3://`, `gitlab://`, `github://`, HTTP), signed with the keys of
   `secret-key-files`. The filters of `copy` (`--exclude-host`,
   `--exclude-name`, `--exclude-class`, `--exclude-local`) leave sources out.
 * `sources.json` at its root lists each entry with its kind (`fetched`,
@@ -554,7 +582,7 @@ filters of `copy`),
 `hash path|file|convert`, `nar dump|restore`, and
 `store add|path-info|sign|closure|ls|verify|gc|serve` (`path-info --json -r
 --closure-size`, also against a cache with `--store URL`), `copy --to URL` and
-`copy --from URL` for `file://`, `http(s)://`, `gitlab://` and `github://`
+`copy --from URL` for `file://`, `http(s)://`, `s3://`, `gitlab://` and `github://`
 caches (uploads with `PUT`; filters, `--dry-run` and `--to-nars`), `cache serve`, and
 `key generate-secret|convert-secret-to-public`, `config show [NAME]`, and
 `daemon` (`--stdio`, `--socket`, `--force-trusted`, `--force-untrusted`).
@@ -740,6 +768,13 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
   `nix store verify` and `nix copy` through `cache serve`. The same fake
   registry, which checks read and write tokens and the services' naming
   rules, backs the `registry_cache` integration test.
+* `tests/s3-cache.sh` starts MinIO (from nixpkgs) with the example keys of
+  the AWS documentation, copies a closure to an `s3://` bucket in it, one
+  NAR as a multipart upload, reads it back with `copy --from` and with
+  `nix path-info`, `nix store verify` and `nix copy`, and archives a
+  release's sources there. The `s3_cache` integration test runs the same
+  round trip against a fake S3 service that checks every signature, and
+  the signer is tested against the AWS signature version 4 test suite.
 * `tests/registry-live.sh` runs the same round trip against real GitLab and
   GitHub projects named by `CRANIX_TEST_GITLAB` and `CRANIX_TEST_GITHUB`, with
   tokens from `CRANIX_TEST_GITLAB_TOKEN_FILE` and `CRANIX_TEST_GITHUB_TOKEN_FILE`.
