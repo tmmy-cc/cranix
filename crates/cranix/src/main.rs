@@ -20,6 +20,7 @@ mod cache_serve;
 mod copy_cmd;
 mod provenance_cmd;
 mod sbom_cmd;
+mod source_archive_cmd;
 mod vuln_cmd;
 mod remote;
 mod flake_cmd;
@@ -63,6 +64,8 @@ commands:
   provenance [FILE | --expr E | INSTALLABLE] [-A ATTR] [-o FILE] [--sign] [--to URL]
                                                  SLSA provenance of the outputs, optionally signed
   provenance verify [FILE | --from URL PATH...] [--public-key KEY]   check signed provenance
+  source-archive [FILE | --expr E | INSTALLABLE] [-A ATTR] (-o DIR | --tarball FILE | --to URL)
+                                                 bundle every source of a release with an index
   vuln-db update [--db DIR] | vuln-db import [--osv FILE] [--nvd FEED]   vulnerability database
   vuln-scan SBOM [--vex FILE] [--fail-on LEVEL] [--max-db-age 7d] [--report FILE]
                                                  check an SBOM; exits 2 on findings, 3 on an old database
@@ -320,6 +323,7 @@ fn run() -> Result<(), String> {
         "copy" => copy_cmd::cmd_copy(&cli, &args),
         "sbom" => sbom_cmd::cmd_sbom(&cli, &args),
         "provenance" => provenance_cmd::cmd_provenance(&cli, &args),
+        "source-archive" => source_archive_cmd::cmd_source_archive(&cli, &args),
         "vuln-db" => vuln_cmd::cmd_vuln_db(&cli, &args),
         "vuln-scan" => vuln_cmd::cmd_vuln_scan(&args),
         "cache" => cache_serve::cmd_cache(&cli.settings, &args),
