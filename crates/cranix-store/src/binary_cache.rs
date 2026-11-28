@@ -452,7 +452,7 @@ impl BinaryCache {
         self.http.put_file(&self.http_url(rel), src, content_type)
     }
 
-    fn put_bytes(&self, rel: &str, data: &[u8], content_type: &str) -> Result<()> {
+    pub fn put_bytes(&self, rel: &str, data: &[u8], content_type: &str) -> Result<()> {
         let tmp = std::env::temp_dir().join(tmp_name("put"));
         fs::write(&tmp, data).map_err(|e| format!("writing '{}': {e}", tmp.display()))?;
         let r = self.put_file(rel, &tmp, content_type);

@@ -13,6 +13,7 @@ pub mod cyclonedx;
 pub mod dsse;
 pub mod lock;
 pub mod provenance;
+pub mod release;
 pub mod spdx;
 pub mod vuln;
 
