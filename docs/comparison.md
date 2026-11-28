@@ -279,7 +279,7 @@ memory before them, and 0.31, 0.32, 0.43 and 2.15 s after.
 
 * Running NixOS or a production fleet: Nix or Lix. They have years of
   production use behind the daemon, sandbox, substituters, flakes and remote
-  builders, and cover the rest of the surface (S3 stores).
+  builders.
   Pick Lix for its community process and quality focus, Nix for being the
   upstream reference.
 * Building infrastructure out of Nix concepts (remote evaluation, alternative
