@@ -10,6 +10,7 @@
 
 pub mod binaries;
 pub mod cyclonedx;
+pub mod dsse;
 pub mod lock;
 pub mod spdx;
 pub mod vuln;
