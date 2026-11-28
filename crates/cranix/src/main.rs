@@ -18,6 +18,7 @@ use cranix_store::Store;
 
 mod cache_serve;
 mod copy_cmd;
+mod provenance_cmd;
 mod sbom_cmd;
 mod vuln_cmd;
 mod remote;
@@ -59,6 +60,9 @@ commands:
   sbom [FILE | --expr E | INSTALLABLE] [-A ATTR] [--format cyclonedx|spdx] [-o FILE]
         [--build-time] [--scan-binaries] [--scan-sources] [--merge DOC]   SBOM of a package or NixOS system
   sbom lock Cargo.lock|package-lock.json        SBOM of a lock file
+  provenance [FILE | --expr E | INSTALLABLE] [-A ATTR] [-o FILE] [--sign] [--to URL]
+                                                 SLSA provenance of the outputs, optionally signed
+  provenance verify [FILE | --from URL PATH...] [--public-key KEY]   check signed provenance
   vuln-db update [--db DIR] | vuln-db import [--osv FILE] [--nvd FEED]   vulnerability database
   vuln-scan SBOM [--vex FILE] [--fail-on LEVEL] [--max-db-age 7d] [--report FILE]
                                                  check an SBOM; exits 2 on findings, 3 on an old database
@@ -315,6 +319,7 @@ fn run() -> Result<(), String> {
         "store" => cmd_store(&cli, &args),
         "copy" => copy_cmd::cmd_copy(&cli, &args),
         "sbom" => sbom_cmd::cmd_sbom(&cli, &args),
+        "provenance" => provenance_cmd::cmd_provenance(&cli, &args),
         "vuln-db" => vuln_cmd::cmd_vuln_db(&cli, &args),
         "vuln-scan" => vuln_cmd::cmd_vuln_scan(&args),
         "cache" => cache_serve::cmd_cache(&cli.settings, &args),
