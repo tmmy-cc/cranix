@@ -33,7 +33,7 @@ benchmark section says otherwise.
 | Memory management      | Boehm GC                    | Boehm GC                     | reference counting                     | reference counting, cycles live until exit |
 | I/O during evaluation  | synchronous                 | synchronous                  | VM suspends into async I/O             | synchronous                             |
 | Store model            | `/nix/store` + SQLite DB    | same as Nix                  | BLAKE3 Merkle DAG (castore) + PathInfo service; NARs computed on demand | `/nix/store` layout + one metadata file per path |
-| Store backends         | local, daemon, binary caches, SSH, S3 | same as Nix          | pluggable (memory, files, object storage, gRPC) | local, daemon, `file://`/`http(s)://` binary caches, GitLab and GitHub package registries, SSH |
+| Store backends         | local, daemon, binary caches, SSH, S3 | same as Nix          | pluggable (memory, files, object storage, gRPC) | local, daemon, `file://`/`http(s)://`/`s3://` binary caches, GitLab and GitHub package registries, SSH |
 | Daemon protocol        | yes                         | yes, compatible              | partial (via `nix-compat`)             | yes, compatible (server and client, 1.37) |
 | Builder                | goal/worker state machine, sandbox | same, sandbox             | separate build service (OCI / bubblewrap) | thread-pool scheduler, sandbox (macOS `sandbox-exec`, Linux namespaces), remote builders |
 | Substituters / caches  | yes, signed                 | yes                          | yes (serves and consumes NAR/narinfo)  | yes, signed                             |
@@ -138,6 +138,10 @@ Nix's single-process, single-machine shape:
   HTTP, with NARs compressed like cache.nixos.org's, together with the
   signed realisations of content-addressed outputs, which substitution
   checks against `trusted-public-keys`.
+* `s3://` caches read and write AWS S3 and S3 compatible stores with
+  Nix's parameters and credential sources, signed with AWS signature
+  version 4 by cranix itself instead of the AWS SDK, with multipart uploads
+  for large NARs.
 * The package registry of a GitLab or GitHub project is a binary cache
   (`gitlab://`, `github://`), with separate read and write tokens and NARs
   grouped into registry packages by hash, by name or by release;
@@ -164,7 +168,7 @@ Nix's single-process, single-machine shape:
   command.
 * `cranix source-archive` bundles the downloads and local sources of a
   build graph, and with `--drvs` its derivations, into a directory, a
-  tarball or any binary cache (`file://`, `gitlab://`, `github://`), with
+  tarball or any binary cache (`file://`, `s3://`, `gitlab://`, `github://`), with
   an index of source, URL, hash and licence. It fetches only fixed-output
   derivations, lists sources it cannot fetch and then exits non-zero; the
   bundle restores with `copy --from` and rebuilds offline. Nix has no such
