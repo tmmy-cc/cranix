@@ -23,11 +23,13 @@ pub struct HttpClient {
     attempts: u32,
     /// Delay before the first retry; it doubles with each further one.
     retry_delay: Duration,
+    /// How long one request may take in all.
+    timeout: Option<Duration>,
 }
 
 impl Default for HttpClient {
     fn default() -> Self {
-        HttpClient { headers: Vec::new(), netrc_file: None, attempts: 5, retry_delay: Duration::from_millis(250) }
+        HttpClient { headers: Vec::new(), netrc_file: None, attempts: 5, retry_delay: Duration::from_millis(250), timeout: None }
     }
 }
 
@@ -106,9 +108,17 @@ impl HttpClient {
         self
     }
 
+    pub fn timeout(mut self, d: Duration) -> HttpClient {
+        self.timeout = Some(d);
+        self
+    }
+
     /// curl's options for this client, in its config file syntax.
     fn config(&self) -> String {
         let mut c = String::from("silent\nshow-error\nlocation\n");
+        if let Some(t) = self.timeout {
+            c.push_str(&format!("max-time = {:.3}\n", t.as_secs_f64()));
+        }
         for (n, v) in &self.headers {
             c.push_str(&format!("header = {}\n", quote(&format!("{n}: {v}"))));
         }
