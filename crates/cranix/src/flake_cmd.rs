@@ -653,7 +653,8 @@ fn show(ev: &Eval, cli: &Cli, lf: &LockedFlake, outputs: &Value, all_systems: bo
     Ok(if json { format!("{j}\n") } else { String::new() })
 }
 
-fn check(ev: &Eval, cli: &Cli, outputs: &Value, build: bool) -> R<()> {
+/// Checks the outputs of a flake and returns the derivations of its checks.
+fn check(ev: &Eval, cli: &Cli, outputs: &Value) -> R<Vec<(StorePath, String)>> {
     let top = ev.force_attrs(outputs)?;
     let outs = match top.get_str("outputs") {
         Some(o) => ev.force_attrs(o)?,
@@ -687,12 +688,28 @@ fn check(ev: &Eval, cli: &Cli, outputs: &Value, build: bool) -> R<()> {
                     if !is_drv {
                         return err(format!("flake attribute '{what}' is not a derivation"));
                     }
+                    // Nix reads the `drvPath` of every package, shell and
+                    // check, which evaluates its whole dependency graph.
+                    let drvs = drvs_of(ev, &av)?;
                     if name == "checks" {
-                        to_build.extend(drvs_of(ev, &av)?);
+                        to_build.extend(drvs);
                     }
                 }
             }
-        } else if matches!(name, "overlays" | "nixosModules" | "templates" | "lib" | "nixosConfigurations" | "darwinConfigurations" | "homeConfigurations") {
+        } else if name == "nixosConfigurations" {
+            // Like Nix, each configuration's `config.system.build.toplevel`
+            // must be a derivation.
+            for (cn, cv) in ev.force_attrs(v)?.iter() {
+                let path = parse_attr_path("config.system.build.toplevel");
+                let top = match select(ev, cv, &path)? {
+                    Some(t) => ev.force(&t)?,
+                    None => return err(format!("attribute 'config' missing in NixOS configuration 'nixosConfigurations.{}'", cn.as_str())),
+                };
+                if !matches!(&top, Value::Attrs(a) if ev.is_derivation(a)?) {
+                    return err(format!("attribute 'config.system.build.toplevel' is not a derivation in NixOS configuration 'nixosConfigurations.{}'", cn.as_str()));
+                }
+            }
+        } else if matches!(name, "overlays" | "nixosModules" | "templates" | "lib" | "darwinConfigurations" | "homeConfigurations") {
             ev.force(v)?;
         } else if matches!(name, "overlay" | "nixosModule" | "defaultTemplate" | "defaultPackage" | "devShell" | "defaultApp") {
             ev.force(v)?;
@@ -700,10 +717,7 @@ fn check(ev: &Eval, cli: &Cli, outputs: &Value, build: bool) -> R<()> {
             cranix_fetchers::warn(format!("unknown flake output '{name}'"));
         }
     }
-    if build && !to_build.is_empty() {
-        realise(ev, cli, &to_build).or_else(err)?;
-    }
-    Ok(())
+    Ok(to_build)
 }
 
 fn copy_template(src: &Path, dst: &Path, created: &mut Vec<String>) -> Result<(), String> {
@@ -786,8 +800,35 @@ pub fn cmd_flake(cli: &Cli, args: &[String]) -> Result<(), String> {
             "check" => {
                 let r = flake_ref_arg(&positional).or_else(err)?;
                 let lf = flake::lock_flake(&ev, &r, &flags.lock)?;
-                let out = flake::call_flake(&ev, &lf)?;
-                check(&ev, cli, &out, !has("--no-build"))?;
+                // A check that passed for this locked flake is cached with
+                // the derivations of its checks, like other evaluations.
+                let cache = crate::eval_cache::EvalCache::open(cli, &ev, flags.impure, &lf, "check", "");
+                let cached = cache.as_ref().and_then(|c| c.get()).and_then(|v| match v {
+                    serde_json::Value::String(s) if crate::eval_cache::drvs_valid(&ev, &s) => Some(s),
+                    _ => None,
+                });
+                let to_build = match cached {
+                    Some(s) => {
+                        let mut drvs = Vec::new();
+                        for l in s.lines() {
+                            let (p, o) = l.split_once('!').ok_or(()).or_else(|_| err("damaged evaluation cache entry"))?;
+                            drvs.push((ev.store.dir.parse(p).or_else(|e| err(e.to_string()))?, o.to_string()));
+                        }
+                        drvs
+                    }
+                    None => {
+                        let out = flake::call_flake(&ev, &lf)?;
+                        let drvs = check(&ev, cli, &out)?;
+                        if let Some(c) = &cache {
+                            let s: Vec<String> = drvs.iter().map(|(p, o)| format!("{}!{o}", ev.store.dir.print(p))).collect();
+                            c.put(serde_json::Value::String(s.join("\n")));
+                        }
+                        drvs
+                    }
+                };
+                if !has("--no-build") && !to_build.is_empty() {
+                    realise(&ev, cli, &to_build).or_else(err)?;
+                }
             }
             "init" | "new" => {
                 let mut tmpl = "templates".to_string();

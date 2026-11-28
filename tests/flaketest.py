@@ -285,6 +285,45 @@ def show_tests(tmp):
         check(f"flake metadata TZ={tz}", n.stdout, o.stdout)
 
 
+CHECK_FLAKES = {
+    "ok": """{
+  outputs = { self }: let
+    drv = name: derivation { inherit name; system = "SYS"; builder = "/bin/sh"; args = [ "-c" "echo > $out" ]; };
+  in {
+    packages.SYS.default = drv "p";
+    checks.SYS.t = drv "c";
+    nixosConfigurations.box.config.system.build.toplevel = drv "toplevel";
+  };
+}
+""",
+    "no-toplevel": """{
+  outputs = { self }: { nixosConfigurations.box = { config = { }; }; };
+}
+""",
+    "toplevel-not-drv": """{
+  outputs = { self }: { nixosConfigurations.box.config.system.build.toplevel = 1; };
+}
+""",
+    "bad-package": """{
+  outputs = { self }: { packages.SYS.default = derivation { name = "x"; system = "SYS"; builder = throw "no builder"; }; };
+}
+""",
+}
+
+
+def check_tests(tmp):
+    system = subprocess.run(["nix", "eval", "--impure", "--raw", "--expr", "builtins.currentSystem"],
+                            capture_output=True, text=True).stdout
+    for name, text in CHECK_FLAKES.items():
+        d = os.path.join(tmp, "check-" + name)
+        git_repo(d, {"flake.nix": text.replace("SYS", system)})
+        n = subprocess.run(["nix", "flake", "check", "--no-build", f"git+file://{d}"], capture_output=True, text=True, cwd=tmp)
+        # The second run reads the evaluation cache.
+        for run_ in ["", " (cached)"]:
+            o = subprocess.run([cranix, "flake", "check", "--no-build", f"git+file://{d}"], capture_output=True, text=True, cwd=tmp)
+            check(f"flake check {name}{run_} (status)", n.returncode, o.returncode, f"\n  {o.stderr[-400:]}")
+
+
 def nixpkgs_tests(tmp):
     nix, _ = run(["nix", "eval", "nixpkgs#hello.drvPath"], tmp)
     if nix is None:
@@ -341,6 +380,7 @@ def main():
         fetcher_tests(tmp)
         flake_tests(tmp)
         show_tests(tmp)
+        check_tests(tmp)
         nixpkgs_tests(tmp)
         if network:
             network_tests(tmp)
