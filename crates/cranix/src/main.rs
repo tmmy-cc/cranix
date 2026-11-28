@@ -38,7 +38,7 @@ usage: cranix [global options] <command> [args]
 commands:
   eval [FILE | --expr E | INSTALLABLE] [-A ATTR] [--json | --raw] [--lazy]
   instantiate [FILE | --expr E] [-A ATTR]       write .drv files, print their paths
-  build [FILE | --expr E | INSTALLABLE] [-A ATTR] [-o LINK | --no-link] [-j N] [-L] [--keep-failed]
+  build [FILE | --expr E | INSTALLABLE] [-A ATTR] [-o LINK | --no-link] [-j N] [-L] [--keep-failed] [--check]
         [--upload-to URL [--upload-jobs N] [--upload-required]]   upload outputs as they are built
   run INSTALLABLE [-- ARGS]                      build and run a flake app or package
   shell INSTALLABLE... [-c CMD ARGS]             shell with the packages on PATH
@@ -570,6 +570,10 @@ fn cmd_instantiate(cli: &Cli, args: &[String], build: bool) -> Result<(), String
     opts.print_logs = t.flags.contains("-L") || t.flags.contains("--print-build-logs");
     opts.keep_failed |= t.flags.contains("-K") || t.flags.contains("--keep-failed");
     let paths: Vec<StorePath> = drvs.iter().map(|(d, _)| d.clone()).collect();
+    let check = t.flags.contains("--check") || t.flags.contains("--rebuild");
+    if check && cli.remote.is_some() {
+        return Err("build --check rebuilds in a local store; pass --store DIR".into());
+    }
     let (res, mut session) = match installable.as_ref().and_then(|_| flake_cmd::present_outputs(&ev, &paths)) {
         Some(r) => (r, None),
         None => match &cli.remote {
@@ -583,6 +587,9 @@ fn cmd_instantiate(cli: &Cli, args: &[String], build: bool) -> Result<(), String
             }
         },
     };
+    if check {
+        check_reproducible(&ev.store, &paths, &opts)?;
+    }
     let link_base = t.opts.iter().find(|(k, _)| k == "-o" || k == "--out-link").map(|(_, v)| v.clone()).unwrap_or("result".into());
     let no_link = t.flags.contains("--no-link");
     for (i, (d, out)) in drvs.iter().enumerate() {
@@ -603,6 +610,35 @@ fn cmd_instantiate(cli: &Cli, args: &[String], build: bool) -> Result<(), String
         }
     }
     Ok(())
+}
+
+/// Rebuilds each of `drvs` and fails with the files that differ from the
+/// existing outputs.
+fn check_reproducible(store: &Store, drvs: &[StorePath], opts: &BuildOptions) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    let mut failures = Vec::new();
+    for d in drvs.iter().filter(|d| seen.insert((*d).clone())) {
+        for diff in store.check_derivation(d, opts)? {
+            let mut msg = format!(
+                "output '{}' of '{}' differs from its rebuild:",
+                store.dir.print(&diff.path),
+                store.dir.print(d)
+            );
+            for line in &diff.differences {
+                msg.push_str("\n  ");
+                msg.push_str(line);
+            }
+            if let Some(k) = &diff.kept {
+                msg.push_str(&format!("\nthe rebuild is kept at '{}'", k.display()));
+            }
+            failures.push(msg);
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n"))
+    }
 }
 
 fn cmd_show_derivation(cli: &Cli, args: &[String]) -> Result<(), String> {
