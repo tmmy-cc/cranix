@@ -36,7 +36,7 @@ bootstrap graph hashes identically.
 | `cranix-eval`   | 7.8k  | Lexer/parser, scope-resolving compiler, lazy evaluator, ~120 builtins including `fromTOML` and `toXML`, `derivationStrict`, printing, JSON, error rendering with source snippets and traces |
 | `cranix-daemon` | 3.8k  | Nix worker protocol (up to 1.37) and serve protocol (2.7): `cranix daemon`, `cranix store serve`, clients for `unix://`, `ssh-ng://` and `ssh://` stores, remote builders |
 | `cranix-fetchers` | 3.0k | Fetchers for files, tarballs, paths, Git and GitHub/GitLab/SourceHut, the fetcher cache, flake registries |
-| `cranix-sbom`   | 1.6k  | CycloneDX and SPDX SBOMs of closures and lock files, Go and Rust binary metadata |
+| `cranix-sbom`   | 1.9k  | CycloneDX and SPDX SBOMs of closures and lock files, Go and Rust binary metadata, SLSA provenance statements and DSSE signatures |
 | `cranix`        | 2.4k  | CLI, flake commands and installables |
 
 The core crate has no knowledge of the evaluator or the file system layout of
@@ -357,6 +357,57 @@ Nix's patch levels and distribution patches are invisible: a package
 patched against a CVE still matches until a VEX statement says `fixed`.
 NVD ranges written for another versioning scheme compare loosely.
 
+**Build provenance.** `cranix provenance INSTALLABLE` (or a file, `--expr`,
+`-A`) builds the installable and writes, for each output, an in-toto
+Statement v1 with a SLSA Provenance v1 predicate, one per line (JSON Lines):
+
+```sh
+cranix provenance .#app -o app.provenance.jsonl
+cranix provenance .#app --sign --to gitlab://group/project
+cranix provenance verify app.provenance.jsonl --public-key ./cache-key.pub
+cranix provenance verify --from gitlab://group/project /nix/store/...-app-1.0
+```
+
+* The subject is the output path with the SHA-256 of its NAR (its
+  `NarHash`). The build definition names the derivation and output, and
+  lists the `.drv` file, the input sources and the outputs of the input
+  derivations with their NAR hashes; its internal parameters hold the
+  system, the system features, the sandbox mode, paths and allowed host
+  dependencies, `timeout` and `max-silent-time`. The builder is cranix and
+  its version. [docs/provenance.md](docs/provenance.md) describes the
+  build type.
+* Statements hold no wall-clock time and their keys are sorted, so the same
+  build gives the same statements on every run.
+* `--sign` wraps each statement in a DSSE envelope signed with the ed25519
+  keys of `secret-key-files`; `keyid` is the key name.
+* `--to URL` (which signs) stores each envelope as `<hash>.provenance.json`
+  beside the narinfo of the output, in any binary cache that `copy --to`
+  takes, the registry caches included.
+* `provenance verify` reads envelopes from a file (or stdin) or, with
+  `--from URL PATH...`, from a cache. Each needs a valid signature by a key
+  of `trusted-public-keys` or `--public-key` (a key or a file holding one),
+  an in-toto statement as payload, and, for paths this store holds,
+  subject digests that match their NAR hashes.
+
+**Reproducibility checks.** `cranix build --check` (or `--rebuild`) builds
+the installable as usual, then rebuilds each of its derivations and compares
+the result with the outputs already present, as `nix build --rebuild` does.
+It fails with one line per differing file, and the first differing line of
+text files:
+
+```text
+error: output '/nix/store/...-stamp' of '/nix/store/...-stamp.drv' differs from its rebuild:
+  share/stamp: contents differ at line 1
+    - Sat Nov 28 10:23:42 CET 2026
+    + Sat Nov 28 10:23:43 CET 2026
+the rebuild is kept at '/nix/store/...-stamp.check'
+```
+
+The existing outputs stay registered and return to their paths whatever the
+result; with `--keep-failed` a differing rebuild stays at `<path>.check`.
+Outputs whose path depends on their contents (floating content-addressed
+outputs) cannot be checked this way.
+
 **Settings.** One configuration value, in `nix.conf` syntax, feeds builds,
 substitution, fetchers, experimental features, remote builders and the
 daemon. It is read in Nix's order, later sources winning:
@@ -453,8 +504,9 @@ target/release/cranix build tests/build.nix --builders 'ssh-ng://builder@host x8
 ```
 
 Commands: `eval` (`--json`, `--raw`, `--lazy`), `instantiate`, `build`
-(`-o`, `--no-link`, `-j`, `-L`, `--keep-failed`, `--upload-to`,
-`--upload-jobs`, `--upload-required`), `show-derivation`,
+(`-o`, `--no-link`, `-j`, `-L`, `--keep-failed`, `--check`, `--upload-to`,
+`--upload-jobs`, `--upload-required`), `provenance` and `provenance verify`,
+`show-derivation`,
 `realisation info`,
 `hash path|file|convert`, `nar dump|restore`, and
 `store add|path-info|sign|closure|ls|verify|gc|serve` (`path-info --json -r
@@ -602,6 +654,17 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
   golden files and generated SBOMs against the CycloneDX 1.6 and SPDX 2.3
   schemas in `crates/cranix-sbom/tests/schemas` (it needs Python's
   `jsonschema`).
+* The `provenance` integration test of the CLI builds a derivation with two
+  outputs, a source and an input derivation, and checks the statements,
+  that two runs give identical output, that signed envelopes verify from a
+  file and from a `file://` cache, and that an envelope without a trusted
+  key or with a changed payload fails. `tests/provenance-schema.py`
+  validates generated statements and envelopes against the in-toto
+  Statement v1, SLSA Provenance v1 and DSSE schemas in the same directory.
+* The `build_check` integration test of the CLI checks that `--check`
+  passes for a reproducible derivation, and fails for one that writes the
+  time with the differing line, keeping the rebuild with `--keep-failed`
+  and the existing output unchanged.
 * The `copy_filters` integration test of the CLI builds a small graph
   (a source, a download, packages, a generated unit, a build input matched
   by name, a system toplevel and a test) and checks each path type and
