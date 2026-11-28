@@ -397,26 +397,38 @@ Resilience Act:
 ```sh
 cranix source-archive .#app -o app-1.0-sources
 cranix source-archive .#app --tarball app-1.0-sources.tar.gz
-cranix source-archive .#app --to file:///srv/release-sources
+cranix source-archive .#app --drvs --to gitlab://group/project
 ```
 
-* It takes the outputs of fixed-output derivations (`fetchurl`,
-  `fetchTarball`, `fetchGit`, `fetchTree`), the local source paths of every
-  derivation, the derivations themselves and the closure of their
-  references. Downloads that are not in the store are fetched first, one by
-  one.
+* It walks the `.drv` graph (the build-time closure) of the installable and
+  takes the outputs of fixed-output derivations (`fetchurl`,
+  `fetchTarball`, `fetchGit`, `fetchTree`) and the local `inputSrcs` of
+  every derivation, which include paths fetched during evaluation, with the
+  closure of their references. `--drvs` adds the derivations, so the exact
+  build graph rebuilds without evaluating again.
+* Missing downloads are substituted, or else built, inputs first. Nothing
+  that is not fixed-output is built: a download whose fetcher needs such a
+  derivation that is not in the store counts as unavailable. `--no-fetch`
+  takes only what the store holds.
 * The bundle is a binary cache: `-o DIR` writes it to a directory,
   `--tarball FILE` to a gzip-compressed tar archive (the same bytes on every
-  run), and `--to URL` to any cache that `copy --to` takes. `--no-fetch`
-  leaves downloads that are missing as they are.
+  run), and `--to URL` to any cache that `copy --to` takes (`file://`,
+  `gitlab://`, `github://`, HTTP), signed with the keys of
+  `secret-key-files`. The filters of `copy` (`--exclude-host`,
+  `--exclude-name`, `--exclude-class`, `--exclude-local`) leave sources out.
 * `sources.json` at its root lists each entry with its kind (`fetched`,
   `local` or `derivation`), the derivation that fetches it, its URLs, its
   hash as the derivation states it, the licences of the packages that use
-  it and those packages. A download that cannot be fetched has
-  `"available": false`, is counted in `missing` and is named in a warning.
-* All its paths are content-addressed, so `cranix copy --from file://DIR
-  PATH...` takes them into a store without signatures, and the release
-  rebuilds there without network access.
+  it and those packages. A source that cannot be fetched has
+  `"available": false` and a `reason`, is counted in `missing` and makes the
+  command exit non-zero after the bundle is written; one a filter left out
+  has a `reason` and is counted in `excluded`.
+* All its paths are content-addressed, so `cranix copy --from URL PATH...`
+  takes them into a store without signatures, and the release rebuilds
+  there without network access.
+* Paths that import-from-derivation creates exist only after a full
+  evaluation that builds them; the bundle holds those that the evaluation
+  before it produced.
 
 **Reproducibility checks.** `cranix build --check` (or `--rebuild`) builds
 the installable as usual, then rebuilds each of its derivations and compares
@@ -535,7 +547,8 @@ target/release/cranix build tests/build.nix --builders 'ssh-ng://builder@host x8
 Commands: `eval` (`--json`, `--raw`, `--lazy`), `instantiate`, `build`
 (`-o`, `--no-link`, `-j`, `-L`, `--keep-failed`, `--check`, `--upload-to`,
 `--upload-jobs`, `--upload-required`), `provenance` and `provenance verify`,
-`source-archive` (`-o`, `--tarball`, `--to`, `--no-fetch`),
+`source-archive` (`-o`, `--tarball`, `--to`, `--drvs`, `--no-fetch` and the
+filters of `copy`),
 `show-derivation`,
 `realisation info`,
 `hash path|file|convert`, `nar dump|restore`, and
@@ -692,10 +705,14 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
   validates generated statements and envelopes against the in-toto
   Statement v1, SLSA Provenance v1 and DSSE schemas in the same directory.
 * The `source_archive` integration test of the CLI bundles a package with a
-  fetched and a local source and a download that fails, checks the index
-  (URL, hash, licence, users, the missing download), that two tarballs are
-  identical, and that the bundle restores into a collected store in which
-  the package rebuilds after its upstream is gone.
+  fetched and a local source, a download that fails and one whose fetcher
+  needs a derivation that is not fixed-output. It checks the index (URL,
+  hash, licence, users, reasons, the exit code), that nothing else is
+  built, that two tarballs are identical, that `--exclude-host` leaves a
+  download out, and that a tarball and a `file://` cache restore into a
+  collected store in which the package rebuilds after its upstream is gone.
+  `tests/registry-cache.sh` pushes a release with `--drvs` to the fake
+  GitLab and GitHub registries and reads a source back.
 * The `build_check` integration test of the CLI checks that `--check`
   passes for a reproducible derivation, and fails for one that writes the
   time with the differing line, keeping the rebuild with `--keep-failed`
