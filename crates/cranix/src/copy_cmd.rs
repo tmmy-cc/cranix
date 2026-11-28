@@ -104,7 +104,7 @@ fn report(store: &Store, sel: &Selection, dry_run: bool) {
     }
 }
 
-fn upload(cli: &Cli, store: &Store, sel: &Selection, url: &str) -> Result<(), String> {
+pub fn upload(cli: &Cli, store: &Store, sel: &Selection, url: &str) -> Result<(), String> {
     let s = &cli.settings;
     let cache = open_cache(url, s)?;
     // Uploads replace what the store remembers about this cache.

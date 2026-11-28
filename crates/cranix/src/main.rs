@@ -65,7 +65,7 @@ commands:
                                                  SLSA provenance of the outputs, optionally signed
   provenance verify [FILE | --from URL PATH...] [--public-key KEY]   check signed provenance
   source-archive [FILE | --expr E | INSTALLABLE] [-A ATTR] (-o DIR | --tarball FILE | --to URL)
-                                                 bundle every source of a release with an index
+        [--drvs] [--no-fetch] [--exclude-host GLOB] ...   bundle every source of a release with an index
   vuln-db update [--db DIR] | vuln-db import [--osv FILE] [--nvd FEED]   vulnerability database
   vuln-scan SBOM [--vex FILE] [--fail-on LEVEL] [--max-db-age 7d] [--report FILE]
                                                  check an SBOM; exits 2 on findings, 3 on an old database

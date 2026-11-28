@@ -12,7 +12,7 @@ use serde_json::Value;
 const CRANIX: &str = env!("CARGO_BIN_EXE_cranix");
 
 const EXPR: &str = r#"
-{ upstream }:
+{ upstream, dir }:
 let
   sh = name: args: extra: derivation ({
     inherit name; system = builtins.currentSystem; builder = "/bin/sh"; args = [ "-c" args ];
@@ -27,8 +27,12 @@ let
     ({ url = "https://example.org/hello.txt"; } // fixed "sha256-LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=");
   gone = sh "gone.tar.gz" "exit 1"
     ({ url = "https://example.org/gone.tar.gz"; } // fixed "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
-  pkg = sh "pkg-1.0" "/bin/cat ${fetched} ${./src}/a.txt > $out" { } // { meta.license.spdxId = "MIT"; };
-in { inherit pkg; all = [ pkg gone ]; }
+  # Builds of anything that is not fixed-output leave a mark.
+  pkg = sh "pkg-1.0" ": > ${dir}/pkg.built; /bin/cat ${fetched} ${./src}/a.txt > $out" { } // { meta.license.spdxId = "MIT"; };
+  tool = sh "tool" ": > ${dir}/tool.built; echo > $out" { };
+  needsTool = sh "needs-tool.txt" "${tool}; printf hello > $out"
+    ({ url = "https://example.org/needs-tool.txt"; } // fixed "sha256-LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=");
+in { inherit pkg; all = [ pkg gone ]; blocked = [ pkg needsTool ]; }
 "#;
 
 struct Env {
@@ -68,14 +72,28 @@ impl Env {
         o
     }
 
-    fn archive(&self, attr: &str, dest: &[&str]) -> Output {
+    fn archive_cmd(&self, attr: &str, dest: &[&str]) -> Output {
         let file = self.path("release.nix");
         let upstream = self.path("upstream.txt");
+        let root = self.path("");
         let mut args = vec![
-            "source-archive", file.as_str(), "-A", attr, "--arg", "upstream", upstream.as_str(),
+            "source-archive", file.as_str(), "-A", attr, "--argstr", "upstream", upstream.as_str(), "--argstr", "dir", root.as_str(),
         ];
         args.extend_from_slice(dest);
-        self.run(&args)
+        self.cmd(&args)
+    }
+
+    fn archive(&self, attr: &str, dest: &[&str]) -> Output {
+        let o = self.archive_cmd(attr, dest);
+        assert!(o.status.success(), "source-archive failed:\n{}", String::from_utf8_lossy(&o.stderr));
+        o
+    }
+
+    /// Asserts that no derivation other than a fixed-output one was built.
+    fn built_nothing(&self) {
+        for m in ["pkg.built", "tool.built"] {
+            assert!(!self.root.join(m).exists(), "{m} exists");
+        }
     }
 
     fn path(&self, name: &str) -> String {
@@ -111,9 +129,11 @@ fn find<'a>(idx: &'a Value, kind: &str, name: &str) -> &'a Value {
 fn lists_sources_and_missing_downloads() {
     let env = Env::new("list");
     let out = env.path("bundle");
-    let o = env.archive("all", &["-o", &out]);
+    let o = env.archive_cmd("all", &["-o", &out, "--drvs"]);
     let stderr = String::from_utf8_lossy(&o.stderr);
-    assert!(stderr.contains("1 sources are not available"), "{stderr}");
+    assert!(!o.status.success(), "a missing source passed:\n{stderr}");
+    assert!(stderr.contains("1 sources could not be fetched"), "{stderr}");
+    env.built_nothing();
     let idx = index(Path::new(&out));
     assert_eq!(idx["missing"], 1);
     let fetched = find(&idx, "fetched", "-hello.txt");
@@ -129,6 +149,7 @@ fn lists_sources_and_missing_downloads() {
     let gone = find(&idx, "fetched", "-gone.tar.gz");
     assert_eq!(gone["available"], false);
     assert_eq!(gone["urls"][0], "https://example.org/gone.tar.gz");
+    assert!(gone["reason"].as_str().unwrap().contains("exit status"), "{gone}");
     find(&idx, "derivation", "-pkg-1.0.drv");
     // Every available entry has a narinfo in the bundle.
     for s in idx["sources"].as_array().unwrap().iter().filter(|s| s["available"] == true) {
@@ -141,9 +162,10 @@ fn lists_sources_and_missing_downloads() {
 fn tarball_restores_and_rebuilds_offline() {
     let env = Env::new("rebuild");
     let tarball = env.path("release-src.tar.gz");
-    env.archive("pkg", &["--tarball", &tarball]);
+    env.archive("pkg", &["--tarball", &tarball, "--drvs"]);
+    env.built_nothing();
     let again = env.path("again.tar.gz");
-    env.archive("pkg", &["--tarball", &again]);
+    env.archive("pkg", &["--tarball", &again, "--drvs"]);
     assert_eq!(fs::read(&tarball).unwrap(), fs::read(&again).unwrap(), "tarballs differ between runs");
 
     let dir = env.root.join("unpacked");
@@ -172,4 +194,57 @@ fn tarball_restores_and_rebuilds_offline() {
     let out = String::from_utf8_lossy(&o.stdout);
     let built = out.split_whitespace().find(|w| w.ends_with("-pkg-1.0")).unwrap_or_else(|| panic!("no output in {out}"));
     assert_eq!(fs::read_to_string(built).unwrap(), "hello world\n");
+}
+
+#[test]
+fn never_builds_other_derivations() {
+    let env = Env::new("blocked");
+    let out = env.path("bundle");
+    let o = env.archive_cmd("blocked", &["-o", &out]);
+    assert!(!o.status.success());
+    env.built_nothing();
+    let idx = index(Path::new(&out));
+    let blocked = find(&idx, "fetched", "-needs-tool.txt");
+    assert_eq!(blocked["available"], false);
+    assert!(blocked["reason"].as_str().unwrap().contains("-tool.drv"), "{blocked}");
+    // Without --drvs the bundle holds no derivation.
+    assert!(idx["sources"].as_array().unwrap().iter().all(|s| s["kind"] != "derivation"));
+}
+
+#[test]
+fn pushes_to_a_cache_and_rebuilds_offline() {
+    let env = Env::new("cache");
+    let cache = env.root.join("cache-dir");
+    let url = format!("file://{}", cache.display());
+    let o = env.archive("pkg", &["--to", &url, "--drvs"]);
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(stderr.contains("archived 1 fetched and 1 local sources and 2 derivations"), "{stderr}");
+    env.built_nothing();
+    let idx = index(&cache);
+    let paths: Vec<String> = idx["sources"].as_array().unwrap().iter().map(|s| s["path"].as_str().unwrap().to_string()).collect();
+    let drv = paths.iter().find(|p| p.ends_with("-pkg-1.0.drv")).unwrap().clone();
+
+    env.run(&["store", "gc"]);
+    fs::remove_file(env.root.join("upstream.txt")).unwrap();
+    let mut args = vec!["copy", "--from", url.as_str()];
+    args.extend(paths.iter().map(String::as_str));
+    env.run(&args);
+    let target = format!("{drv}^out");
+    let o = env.run(&["realisation", "info", &target]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    let built = out.split_whitespace().find(|w| w.ends_with("-pkg-1.0")).unwrap();
+    assert_eq!(fs::read_to_string(built).unwrap(), "hello world\n");
+}
+
+#[test]
+fn filters_leave_sources_out() {
+    let env = Env::new("filter");
+    let out = env.path("bundle");
+    env.archive("pkg", &["-o", &out, "--exclude-host", "example.org"]);
+    let idx = index(Path::new(&out));
+    let fetched = find(&idx, "fetched", "-hello.txt");
+    assert!(fetched["reason"].as_str().unwrap().starts_with("left out:"), "{fetched}");
+    assert_eq!(idx["excluded"], 1);
+    let base = fetched["path"].as_str().unwrap().rsplit('/').next().unwrap();
+    assert!(!Path::new(&out).join(format!("{}.narinfo", &base[..32])).exists());
 }
