@@ -36,7 +36,7 @@ bootstrap graph hashes identically.
 | `cranix-eval`   | 7.8k  | Lexer/parser, scope-resolving compiler, lazy evaluator, ~120 builtins including `fromTOML` and `toXML`, `derivationStrict`, printing, JSON, error rendering with source snippets and traces |
 | `cranix-daemon` | 3.8k  | Nix worker protocol (up to 1.37) and serve protocol (2.7): `cranix daemon`, `cranix store serve`, clients for `unix://`, `ssh-ng://` and `ssh://` stores, remote builders |
 | `cranix-fetchers` | 3.0k | Fetchers for files, tarballs, paths, Git and GitHub/GitLab/SourceHut, the fetcher cache, flake registries |
-| `cranix-sbom`   | 1.9k  | CycloneDX and SPDX SBOMs of closures and lock files, Go and Rust binary metadata, SLSA provenance statements and DSSE signatures |
+| `cranix-sbom`   | 1.9k  | CycloneDX and SPDX SBOMs of closures and lock files, Go and Rust binary metadata, SLSA provenance statements and DSSE signatures, release source bundles |
 | `cranix`        | 2.4k  | CLI, flake commands and installables |
 
 The core crate has no knowledge of the evaluator or the file system layout of
@@ -389,6 +389,35 @@ cranix provenance verify --from gitlab://group/project /nix/store/...-app-1.0
   an in-toto statement as payload, and, for paths this store holds,
   subject digests that match their NAR hashes.
 
+**Release sources.** `cranix source-archive INSTALLABLE` (or a file,
+`--expr`, `-A`) bundles every source the build graph of the installable is
+made from, for the documentation and retention duties of the EU Cyber
+Resilience Act:
+
+```sh
+cranix source-archive .#app -o app-1.0-sources
+cranix source-archive .#app --tarball app-1.0-sources.tar.gz
+cranix source-archive .#app --to file:///srv/release-sources
+```
+
+* It takes the outputs of fixed-output derivations (`fetchurl`,
+  `fetchTarball`, `fetchGit`, `fetchTree`), the local source paths of every
+  derivation, the derivations themselves and the closure of their
+  references. Downloads that are not in the store are fetched first, one by
+  one.
+* The bundle is a binary cache: `-o DIR` writes it to a directory,
+  `--tarball FILE` to a gzip-compressed tar archive (the same bytes on every
+  run), and `--to URL` to any cache that `copy --to` takes. `--no-fetch`
+  leaves downloads that are missing as they are.
+* `sources.json` at its root lists each entry with its kind (`fetched`,
+  `local` or `derivation`), the derivation that fetches it, its URLs, its
+  hash as the derivation states it, the licences of the packages that use
+  it and those packages. A download that cannot be fetched has
+  `"available": false`, is counted in `missing` and is named in a warning.
+* All its paths are content-addressed, so `cranix copy --from file://DIR
+  PATH...` takes them into a store without signatures, and the release
+  rebuilds there without network access.
+
 **Reproducibility checks.** `cranix build --check` (or `--rebuild`) builds
 the installable as usual, then rebuilds each of its derivations and compares
 the result with the outputs already present, as `nix build --rebuild` does.
@@ -506,6 +535,7 @@ target/release/cranix build tests/build.nix --builders 'ssh-ng://builder@host x8
 Commands: `eval` (`--json`, `--raw`, `--lazy`), `instantiate`, `build`
 (`-o`, `--no-link`, `-j`, `-L`, `--keep-failed`, `--check`, `--upload-to`,
 `--upload-jobs`, `--upload-required`), `provenance` and `provenance verify`,
+`source-archive` (`-o`, `--tarball`, `--to`, `--no-fetch`),
 `show-derivation`,
 `realisation info`,
 `hash path|file|convert`, `nar dump|restore`, and
@@ -661,6 +691,11 @@ Not implemented: S3 stores, `fetchMercurial`, the evaluation cache, the
   key or with a changed payload fails. `tests/provenance-schema.py`
   validates generated statements and envelopes against the in-toto
   Statement v1, SLSA Provenance v1 and DSSE schemas in the same directory.
+* The `source_archive` integration test of the CLI bundles a package with a
+  fetched and a local source and a download that fails, checks the index
+  (URL, hash, licence, users, the missing download), that two tarballs are
+  identical, and that the bundle restores into a collected store in which
+  the package rebuilds after its upstream is gone.
 * The `build_check` integration test of the CLI checks that `--check`
   passes for a reproducible derivation, and fails for one that writes the
   time with the differing line, keeping the rebuild with `--keep-failed`

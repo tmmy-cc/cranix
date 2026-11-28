@@ -271,6 +271,11 @@
                                 <p>Signed SLSA provenance of what was built from which inputs, with which sandbox and limits, stored beside the narinfo in a cache, and <code>build --check</code> to show that an output rebuilds the same.</p>
                             </li>
                             <li class="feature reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7h18v13H3zM5 4h14v3H5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M10 11h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                                <h3>Release sources</h3>
+                                <p>Every download and local source of a release in one bundle, with an index of URL, hash and licence, that restores into a store and rebuilds without network access.</p>
+                            </li>
+                            <li class="feature reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 4h8v6H3zM13 14h8v6h-8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M7 10v4h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                                 <h3>Daemon and remote builders</h3>
                                 <p>The Nix daemon protocol in both directions: Nix clients can use a cranix store, and cranix can use a Nix daemon. Builds go to other machines over <code>ssh-ng://</code> or <code>ssh://</code>.</p>
@@ -391,7 +396,7 @@
                         </div>
                     </li>
                 </ol>
-                <p class="commands reveal">Commands: <code>eval</code>, <code>instantiate</code>, <code>build</code>, <code>run</code>, <code>shell</code>, <code>develop</code>, <code>flake metadata|<wbr>show|<wbr>lock|<wbr>update|<wbr>check|<wbr>init|<wbr>new</code>, <code>copy</code>, <code>provenance</code>, <code>daemon</code>, <code>show-derivation</code>, <code>realisation info</code>, <code>hash</code>, <code>key</code>, <code>nar dump|<wbr>restore</code> and <code>store add|<wbr>path-info|<wbr>sign|<wbr>closure|<wbr>ls|<wbr>verify|<wbr>gc|<wbr>serve</code>. Global options include <code>--store</code>, <code>--builders</code>, <code>--option</code>, <code>--show-trace</code>, <code>-I</code>, <code>--arg</code>, <code>--argstr</code>, <code>--system</code> and <code>--pure</code>.</p>
+                <p class="commands reveal">Commands: <code>eval</code>, <code>instantiate</code>, <code>build</code>, <code>run</code>, <code>shell</code>, <code>develop</code>, <code>flake metadata|<wbr>show|<wbr>lock|<wbr>update|<wbr>check|<wbr>init|<wbr>new</code>, <code>copy</code>, <code>provenance</code>, <code>source-archive</code>, <code>daemon</code>, <code>show-derivation</code>, <code>realisation info</code>, <code>hash</code>, <code>key</code>, <code>nar dump|<wbr>restore</code> and <code>store add|<wbr>path-info|<wbr>sign|<wbr>closure|<wbr>ls|<wbr>verify|<wbr>gc|<wbr>serve</code>. Global options include <code>--store</code>, <code>--builders</code>, <code>--option</code>, <code>--show-trace</code>, <code>-I</code>, <code>--arg</code>, <code>--argstr</code>, <code>--system</code> and <code>--pure</code>.</p>
             </div>
         </section>
 
