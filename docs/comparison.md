@@ -162,6 +162,12 @@ Nix's single-process, single-machine shape:
   envelopes with the keys of `secret-key-files`, stores them beside the
   narinfo in a binary cache and verifies them; Nix has no provenance
   command.
+* `cranix source-archive` bundles the downloads, local sources and
+  derivations of a build graph as a binary cache in a directory, a tarball
+  or a cache, with an index of source, URL, hash and licence that lists
+  downloads which cannot be fetched; the bundle restores with `copy --from`
+  and rebuilds offline. Nix has no such command; `nix flake archive` copies
+  only flake inputs.
 * `cranix build --check` rebuilds present outputs and compares them, as
   `nix build --rebuild` does, and names each differing file with its first
   differing line, where Nix reports only that the output is not
