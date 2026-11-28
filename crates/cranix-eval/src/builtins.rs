@@ -292,9 +292,10 @@ pub static PRIMOPS: &[PrimOp] = &[
     }),
     prim!("functionArgs", 1, |ev, a| match ev.force(&a[0])? {
         Value::Lambda(c) => match &c.def.formals {
-            Some(f) => Ok(Value::attrs(Attrs::from_unsorted(
-                f.entries.iter().map(|(k, d)| (k.clone(), Value::Bool(d.is_some()))).collect(),
-            ))),
+            Some(f) => Ok(Value::attrs(
+                Attrs::from_unsorted(f.entries.iter().map(|(k, d)| (k.clone(), Value::Bool(d.is_some()))).collect())
+                    .with_positions(f.positions),
+            )),
             None => Ok(Value::attrs(Attrs::default())),
         },
         Value::PrimOp(_) => Ok(Value::attrs(Attrs::default())),

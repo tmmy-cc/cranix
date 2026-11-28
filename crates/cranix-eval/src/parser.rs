@@ -473,7 +473,7 @@ impl<'a> Parser<'a> {
     }
 
     fn formals(&mut self) -> R<Formals> {
-        let mut f = Formals { entries: Vec::new(), ellipsis: false };
+        let mut f = Formals { entries: Vec::new(), ellipsis: false, positions: Vec::new() };
         loop {
             match self.next()? {
                 (Tok::Sym("}"), _) => break,
@@ -494,6 +494,7 @@ impl<'a> Parser<'a> {
                         None
                     };
                     f.entries.push((sym, def));
+                    f.positions.push(self.mkpos(at));
                     match self.next()? {
                         (Tok::Sym(","), _) => {}
                         (Tok::Sym("}"), _) => break,
