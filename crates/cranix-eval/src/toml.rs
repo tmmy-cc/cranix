@@ -74,10 +74,17 @@ impl Node {
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
+    /// Dates and times become `{ _type = "timestamp"; value = …; }`, as
+    /// with Nix's `parse-toml-timestamps` experimental feature.
+    timestamps: bool,
 }
 
 pub fn from_toml(src: &str) -> R<Value> {
-    let mut p = Parser { s: src.as_bytes(), i: 0 };
+    from_toml_with(src, false)
+}
+
+pub fn from_toml_with(src: &str, timestamps: bool) -> R<Value> {
+    let mut p = Parser { s: src.as_bytes(), i: 0, timestamps };
     p.document().map_err(|e| {
         let (line, col) = p.line_col();
         Box::new(crate::error::EvalError::new(
@@ -328,7 +335,10 @@ impl<'a> Parser<'a> {
     fn number(&mut self) -> R<Node> {
         let start = self.i;
         if self.is_datetime() {
-            return err("Dates and times are not supported");
+            if !self.timestamps {
+                return err("Dates and times are not supported");
+            }
+            return Ok(Node::Value(self.datetime()));
         }
         while matches!(self.peek(), Some(c) if c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'+' | b'-')) {
             // A sign only belongs to the number after an exponent marker.
@@ -345,6 +355,33 @@ impl<'a> Parser<'a> {
     }
 
     /// Whether a date (`1979-05-27`) or time (`07:32:00`) starts here.
+    /// A date, time or date-time, in the form Nix prints it: `T` between
+    /// date and time, upper-case `T` and `Z`.
+    fn datetime(&mut self) -> Value {
+        let start = self.i;
+        while let Some(c) = self.peek() {
+            let space_sep = c == b' ' && self.s.get(self.i + 1).is_some_and(u8::is_ascii_digit) && self.i - start == 10;
+            if c.is_ascii_digit() || matches!(c, b'-' | b':' | b'.' | b'+' | b'T' | b't' | b'Z' | b'z') || space_sep {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+        let text: String = std::str::from_utf8(&self.s[start..self.i])
+            .unwrap_or("")
+            .chars()
+            .map(|c| match c {
+                ' ' | 't' => 'T',
+                'z' => 'Z',
+                c => c,
+            })
+            .collect();
+        Value::attrs(crate::value::Attrs::from_unsorted(vec![
+            (crate::value::Sym::new("_type"), Value::str("timestamp")),
+            (crate::value::Sym::new("value"), Value::str(text)),
+        ]))
+    }
+
     fn is_datetime(&self) -> bool {
         let rest = &self.s[self.i..];
         let digits = |n: usize| rest.len() > n && rest[..n].iter().all(u8::is_ascii_digit);
