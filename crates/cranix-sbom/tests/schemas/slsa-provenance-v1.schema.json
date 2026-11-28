@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://slsa.dev/provenance/v1/schema.json",
+  "title": "SLSA Provenance v1 predicate",
+  "description": "The predicate of predicateType https://slsa.dev/provenance/v1, transcribed from https://slsa.dev/spec/v1.0/provenance and its provenance.proto.",
+  "type": "object",
+  "required": ["buildDefinition", "runDetails"],
+  "properties": {
+    "buildDefinition": {
+      "type": "object",
+      "required": ["buildType", "externalParameters"],
+      "properties": {
+        "buildType": { "type": "string", "format": "uri", "minLength": 1 },
+        "externalParameters": { "type": "object" },
+        "internalParameters": { "type": "object" },
+        "resolvedDependencies": {
+          "type": "array",
+          "items": { "$ref": "in-toto-statement-v1.schema.json#/definitions/ResourceDescriptor" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "runDetails": {
+      "type": "object",
+      "required": ["builder"],
+      "properties": {
+        "builder": {
+          "type": "object",
+          "required": ["id"],
+          "properties": {
+            "id": { "type": "string", "format": "uri", "minLength": 1 },
+            "version": { "type": "object", "additionalProperties": { "type": "string" } },
+            "builderDependencies": {
+              "type": "array",
+              "items": { "$ref": "in-toto-statement-v1.schema.json#/definitions/ResourceDescriptor" }
+            }
+          },
+          "additionalProperties": false
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "invocationId": { "type": "string" },
+            "startedOn": { "type": "string", "format": "date-time" },
+            "finishedOn": { "type": "string", "format": "date-time" }
+          },
+          "additionalProperties": false
+        },
+        "byproducts": {
+          "type": "array",
+          "items": { "$ref": "in-toto-statement-v1.schema.json#/definitions/ResourceDescriptor" }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
