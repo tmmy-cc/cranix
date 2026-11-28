@@ -266,13 +266,15 @@ impl Eval {
 
     pub fn import(&self, path: &str) -> R<Value> {
         let path = self.import_path(path);
-        if let Some(v) = self.import_cache.borrow().get(&path) {
+        // Files reached through symlinks share one cache entry, as in Nix.
+        let key = std::fs::canonicalize(self.store.resolve(&path)).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| path.clone());
+        if let Some(v) = self.import_cache.borrow().get(&key) {
             return Ok(v.clone());
         }
         let (src, dir) = self.import_source(&path)?;
         let e = self.parse(&src, &path, &dir)?;
         let v = self.eval(e, &self.base_env().clone())?;
-        self.import_cache.borrow_mut().insert(path, v.clone());
+        self.import_cache.borrow_mut().insert(key, v.clone());
         Ok(v)
     }
 
