@@ -66,16 +66,25 @@ pub fn nix_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
-/// Prints a value in Nix syntax. With `strict`, nested values are forced;
-/// otherwise unevaluated parts print as `«thunk»`.
+/// Prints a value in Nix syntax, as `nix-instantiate --eval` does. With
+/// `strict`, nested values are forced; otherwise unevaluated parts print as
+/// `«thunk»`. A set or list printed before prints as `«repeated»`; the
+/// value itself is a copy for Nix, so its own first nested occurrence still
+/// prints.
 pub fn print_value(ev: &Eval, v: &Value, strict: bool) -> R<String> {
     let mut out = String::new();
     let mut seen = HashSet::new();
-    print_inner(ev, v, strict, &mut out, &mut seen)?;
+    print_inner(ev, v, strict, &mut out, &mut seen, true)?;
     Ok(out)
 }
 
-fn print_inner(ev: &Eval, v: &Value, strict: bool, out: &mut String, seen: &mut HashSet<usize>) -> R<()> {
+fn print_inner(ev: &Eval, v: &Value, strict: bool, out: &mut String, seen: &mut HashSet<usize>, top: bool) -> R<()> {
+    // A value is repeated when the same slot, a thunk here, comes again,
+    // as Nix compares the addresses of its values.
+    let slot = match v {
+        Value::Thunk(t) => Some(Rc::as_ptr(t) as usize),
+        _ => None,
+    };
     let v = if strict {
         ev.force(v)?
     } else {
@@ -97,23 +106,23 @@ fn print_inner(ev: &Eval, v: &Value, strict: bool, out: &mut String, seen: &mut 
         Value::Float(f) => out.push_str(&fmt_float(*f)),
         Value::Str(s) => nix_string(&s.s, out),
         Value::Path(p) => out.push_str(p),
-        Value::Lambda(_) => out.push_str("«lambda»"),
-        Value::PrimOp(p) if p.args.is_empty() => write!(out, "«primop {}»", p.op.name).unwrap(),
-        Value::PrimOp(p) => write!(out, "«partially applied primop {}»", p.op.name).unwrap(),
+        Value::Lambda(_) => out.push_str("<LAMBDA>"),
+        Value::PrimOp(p) if p.args.is_empty() => out.push_str("<PRIMOP>"),
+        Value::PrimOp(_) => out.push_str("<PRIMOP-APP>"),
         Value::Thunk(_) => out.push_str("«thunk»"),
         Value::List(l) => {
-            let id = Rc::as_ptr(l) as usize;
-            if !seen.insert(id) {
+            let id = slot.unwrap_or(Rc::as_ptr(l) as usize);
+            // Empty lists and sets print as themselves every time.
+            if !top && !l.is_empty() && !seen.insert(id) {
                 out.push_str("«repeated»");
                 return Ok(());
             }
             out.push('[');
             for x in l.iter() {
                 out.push(' ');
-                print_inner(ev, x, strict, out, seen)?;
+                print_inner(ev, x, strict, out, seen, false)?;
             }
             out.push_str(" ]");
-            seen.remove(&id);
         }
         Value::Attrs(a) => {
             if ev.is_derivation(a)? {
@@ -123,8 +132,8 @@ fn print_inner(ev: &Eval, v: &Value, strict: bool, out: &mut String, seen: &mut 
                     return Ok(());
                 }
             }
-            let id = Rc::as_ptr(a) as usize;
-            if !seen.insert(id) {
+            let id = slot.unwrap_or(Rc::as_ptr(a) as usize);
+            if !top && !a.is_empty() && !seen.insert(id) {
                 out.push_str("«repeated»");
                 return Ok(());
             }
@@ -137,11 +146,10 @@ fn print_inner(ev: &Eval, v: &Value, strict: bool, out: &mut String, seen: &mut 
                     nix_string(k.as_str(), out);
                 }
                 out.push_str(" = ");
-                print_inner(ev, x, strict, out, seen)?;
+                print_inner(ev, x, strict, out, seen, false)?;
                 out.push(';');
             }
             out.push_str(" }");
-            seen.remove(&id);
         }
     }
     Ok(())
