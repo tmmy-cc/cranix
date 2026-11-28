@@ -213,7 +213,7 @@
                 <div class="section-header reveal">
                     <p class="section-kicker">Features</p>
                     <h2 id="features-title">From the language to the supply chain</h2>
-                    <p>Everything marked available is on the main branch and checked against Nix by its test suites. The supply-chain tooling comes next.</p>
+                    <p>Everything marked available is on the main branch and checked against Nix by its test suites. The items marked planned come next.</p>
                 </div>
 
                 <div class="feature-groups">
@@ -266,6 +266,11 @@
                                 <p>Check an SBOM against OSV and NVD data, record assessments with OpenVEX, and fail CI while an unassessed finding remains.</p>
                             </li>
                             <li class="feature reveal">
+                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18z" fill="none" stroke="currentColor" stroke-width="1.8"/><path class="accent" d="m8 12 3 3 5-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                <h3>Build provenance</h3>
+                                <p>Signed SLSA provenance of what was built from which inputs, with which sandbox and limits, stored beside the narinfo in a cache, and <code>build --check</code> to show that an output rebuilds the same.</p>
+                            </li>
+                            <li class="feature reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 4h8v6H3zM13 14h8v6h-8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M7 10v4h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                                 <h3>Daemon and remote builders</h3>
                                 <p>The Nix daemon protocol in both directions: Nix clients can use a cranix store, and cranix can use a Nix daemon. Builds go to other machines over <code>ssh-ng://</code> or <code>ssh://</code>.</p>
@@ -291,11 +296,6 @@
                     <div>
                         <h3 class="feature-group-title reveal"><span class="status status-planned">Planned</span></h3>
                         <ul class="features" data-stagger>
-                            <li class="feature feature-planned reveal">
-                                <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18z" fill="none" stroke="currentColor" stroke-width="1.8"/><path class="accent" d="m8 12 3 3 5-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                                <h3>Build provenance</h3>
-                                <p>Signed statements of what was built from which inputs, on which machine, so a release can be traced back to its sources.</p>
-                            </li>
                             <li class="feature feature-planned reveal">
                                 <svg class="feature-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M13 3 5 13h6l-1 8 8-10h-6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path class="accent" d="M13 3 5 13h6z" fill="currentColor" opacity="0.5"/></svg>
                                 <h3>Faster repeated evaluation</h3>
@@ -391,7 +391,7 @@
                         </div>
                     </li>
                 </ol>
-                <p class="commands reveal">Commands: <code>eval</code>, <code>instantiate</code>, <code>build</code>, <code>run</code>, <code>shell</code>, <code>develop</code>, <code>flake metadata|<wbr>show|<wbr>lock|<wbr>update|<wbr>check|<wbr>init|<wbr>new</code>, <code>copy</code>, <code>daemon</code>, <code>show-derivation</code>, <code>realisation info</code>, <code>hash</code>, <code>key</code>, <code>nar dump|<wbr>restore</code> and <code>store add|<wbr>path-info|<wbr>sign|<wbr>closure|<wbr>ls|<wbr>verify|<wbr>gc|<wbr>serve</code>. Global options include <code>--store</code>, <code>--builders</code>, <code>--option</code>, <code>--show-trace</code>, <code>-I</code>, <code>--arg</code>, <code>--argstr</code>, <code>--system</code> and <code>--pure</code>.</p>
+                <p class="commands reveal">Commands: <code>eval</code>, <code>instantiate</code>, <code>build</code>, <code>run</code>, <code>shell</code>, <code>develop</code>, <code>flake metadata|<wbr>show|<wbr>lock|<wbr>update|<wbr>check|<wbr>init|<wbr>new</code>, <code>copy</code>, <code>provenance</code>, <code>daemon</code>, <code>show-derivation</code>, <code>realisation info</code>, <code>hash</code>, <code>key</code>, <code>nar dump|<wbr>restore</code> and <code>store add|<wbr>path-info|<wbr>sign|<wbr>closure|<wbr>ls|<wbr>verify|<wbr>gc|<wbr>serve</code>. Global options include <code>--store</code>, <code>--builders</code>, <code>--option</code>, <code>--show-trace</code>, <code>-I</code>, <code>--arg</code>, <code>--argstr</code>, <code>--system</code> and <code>--pure</code>.</p>
             </div>
         </section>
 

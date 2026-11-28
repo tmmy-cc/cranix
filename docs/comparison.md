@@ -156,6 +156,16 @@ Nix's single-process, single-machine shape:
   has no SBOM command.
 * `cranix vuln-scan` checks such an SBOM against OSV and NVD data cached
   locally, with OpenVEX assessments and exit codes for CI.
+* `cranix provenance` writes deterministic in-toto statements with SLSA
+  Provenance v1 predicates for the outputs of a build (derivation, inputs by
+  NAR hash, builder, sandbox settings, time limits), signs them as DSSE
+  envelopes with the keys of `secret-key-files`, stores them beside the
+  narinfo in a binary cache and verifies them; Nix has no provenance
+  command.
+* `cranix build --check` rebuilds present outputs and compares them, as
+  `nix build --rebuild` does, and names each differing file with its first
+  differing line, where Nix reports only that the output is not
+  deterministic.
 
 ### Measured against Nix 2.24
 
