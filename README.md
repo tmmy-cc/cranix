@@ -650,9 +650,10 @@ client), remote builders over `ssh-ng://` and `ssh://`, the fetchers (`fetchurl`
 registries, `getFlake`, `parseFlakeRef`).
 
 Fetched inputs get the same store paths and attributes as in Nix, and lock
-files are interchangeable with Nix's. Downloads, Git clones and ref lookups
-are cached in the store's state directory (`fetcher-cache`, `gitv3`) and
-expire after `tarball-ttl` (read from `nix.conf`). Archives are decompressed
+files are interchangeable with Nix's. Downloads and ref lookups are recorded
+in `~/.cache/cranix/fetcher-cache-v1` (`$XDG_CACHE_HOME` if set), Git clones
+are kept in the store's state directory (`gitv3`), and both expire after
+`tarball-ttl` (read from `nix.conf`). Archives are decompressed
 with `gzip`, `xz`, `bzip2` or `zstd` and Git repositories are read with the
 `git` command line tool.
 
