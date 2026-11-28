@@ -25,6 +25,8 @@ mod vuln_cmd;
 mod remote;
 mod flake_cmd;
 mod eval_cache;
+mod nix_env_cmd;
+mod profiles;
 
 #[cfg(not(feature = "dhat-heap"))]
 #[global_allocator]
@@ -72,6 +74,9 @@ commands:
   key generate-secret --key-name NAME | key convert-secret-to-public < KEY
   config show [--show-secrets] [NAME]            print the settings in effect
   store serve [--write]                          serve the store to ssh:// clients (also: --serve)
+  nix-env [-p PROFILE] [-f FILE] -i [-A] NAME... | -e NAME... | -u [NAME...] | -q [-a] [-P] [--out-path]
+        | --rollback | --list-generations | --switch-generation N | --delete-generations old|Nd|+N|N...
+                                                 manage a profile with manifest.nix, as nix-env does
   daemon [--stdio] [--socket PATH] [--force-trusted|--force-untrusted]
                                                  serve the store to Nix clients
 
@@ -336,6 +341,7 @@ fn run() -> Result<(), String> {
             remote::cmd_daemon(open_store(&cli)?, &args, &cli.settings)
         }
         "flake" => flake_cmd::cmd_flake(&cli, &args),
+        "nix-env" | "env" => nix_env_cmd::cmd_nix_env(&cli, &args),
         "run" | "shell" | "develop" => flake_cmd::cmd_run_like(&cli, &cmd, &args),
         c => Err(format!("unknown command '{c}'\n{USAGE}")),
     }

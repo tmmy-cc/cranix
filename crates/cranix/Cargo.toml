@@ -19,6 +19,7 @@ cranix-sbom.workspace = true
 flate2 = "1"
 libc.workspace = true
 serde_json.workspace = true
+regex.workspace = true
 mimalloc.workspace = true
 dhat = { version = "0.3", optional = true }
 
