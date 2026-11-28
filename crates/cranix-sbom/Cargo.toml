@@ -1,6 +1,6 @@
 [package]
 name = "cranix-sbom"
-description = "Software bills of materials (CycloneDX, SPDX) for store closures"
+description = "Software bills of materials (CycloneDX, SPDX) and build provenance for store closures"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
