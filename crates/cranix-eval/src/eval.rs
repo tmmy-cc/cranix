@@ -1082,6 +1082,16 @@ impl Eval {
         }
     }
 
+    /// Equality of two values that sit in lists, sets or `elem`: the same
+    /// value in memory (one thunk, one function, one set or list) is equal
+    /// to itself without being forced, as in Nix.
+    pub fn eq_member(&self, a: &Value, b: &Value) -> R<bool> {
+        if same_value(a, b) {
+            return Ok(true);
+        }
+        self.eq(a, b)
+    }
+
     pub fn eq(&self, a: &Value, b: &Value) -> R<bool> {
         let a = self.force(a)?;
         let b = self.force(b)?;
@@ -1100,7 +1110,7 @@ impl Eval {
                     return Ok(false);
                 }
                 for (p, q) in x.iter().zip(y.iter()) {
-                    if !self.eq(p, q)? {
+                    if !self.eq_member(p, q)? {
                         return Ok(false);
                     }
                 }
@@ -1122,7 +1132,7 @@ impl Eval {
                 // sets are compared without caching a merged copy.
                 for (k, v1) in x.entries_uncached().iter() {
                     match y.get(k) {
-                        Some(v2) if self.eq(v1, v2)? => {}
+                        Some(v2) if self.eq_member(v1, v2)? => {}
                         _ => return Ok(false),
                     }
                 }
@@ -1144,7 +1154,7 @@ impl Eval {
             (Value::Path(x), Value::Path(y)) => Ok(x.as_bytes().cmp(y.as_bytes())),
             (Value::List(x), Value::List(y)) => {
                 for (p, q) in x.iter().zip(y.iter()) {
-                    if self.eq(p, q)? {
+                    if self.eq_member(p, q)? {
                         continue;
                     }
                     return self.compare(p, q);
@@ -1153,6 +1163,34 @@ impl Eval {
             }
             _ => err(format!("cannot compare {} with {}", a.describe(), b.describe())),
         }
+    }
+}
+
+/// Whether `a` and `b` are the same value in memory: the same thunk, or
+/// thunks forced already to the same function, primop, set or list.
+fn same_value(a: &Value, b: &Value) -> bool {
+    if let (Value::Thunk(x), Value::Thunk(y)) = (a, b) {
+        if Rc::ptr_eq(x, y) {
+            return true;
+        }
+    }
+    let resolve = |v: &Value| -> Option<Value> {
+        let mut v = v.clone();
+        for _ in 0..64 {
+            match &v {
+                Value::Thunk(t) => v = t.peek()?,
+                _ => return Some(v),
+            }
+        }
+        None
+    };
+    let (Some(a), Some(b)) = (resolve(a), resolve(b)) else { return false };
+    match (&a, &b) {
+        (Value::Lambda(x), Value::Lambda(y)) => Rc::ptr_eq(x, y),
+        (Value::PrimOp(x), Value::PrimOp(y)) => Rc::ptr_eq(x, y),
+        (Value::Attrs(x), Value::Attrs(y)) => Rc::ptr_eq(x, y),
+        (Value::List(x), Value::List(y)) => Rc::ptr_eq(x, y),
+        _ => false,
     }
 }
 

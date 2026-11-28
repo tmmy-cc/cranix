@@ -233,7 +233,7 @@ pub static PRIMOPS: &[PrimOp] = &[
     }),
     prim!("elem", 2, |ev, a| {
         for x in ev.force_list(&a[1])?.iter() {
-            if ev.eq(&a[0], x)? {
+            if ev.eq_member(&a[0], x)? {
                 return Ok(Value::Bool(true));
             }
         }
