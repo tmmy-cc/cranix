@@ -11,5 +11,4 @@ snix/eval-okay-identifier-formatting
 snix/eval-okay-import-display
 snix/eval-okay-observable-eval-cache
 snix/eval-okay-value-display
-snix/eval-okay-value-pointer-compare
 snix/eval-okay-value-pointer-equality
